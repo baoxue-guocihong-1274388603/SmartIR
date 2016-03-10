@@ -1,0 +1,199 @@
+所有传输加20个字节头部：IALARM:0000000000000，IALARM:为固定头部，后面接13个字节的 内容的长度 字符串。
+报警主机与前端设备通信采用tcp长连接，前端设备主动上报信息采用tcp短连接。主设备辅助设备之前通信采用tcp长连接。
+所有网段为192.168.8.*
+报警主机固定监听端口6901，用于前端设备主动上报信息，前端设备固定监听端口6902，用于报警主机与其通信。前端设备固定监听6903端口用于主设备与辅助设备之前通信，前端设备固定监听6904端口，用于报警主机对前端设备进行升级。组播监听端口6905，组播地址224.0.0.17
+
+/****************************************************************/
+//报警主机搜索通过udp组播发送
+1、报警主机搜索
+<?xml version="1.0" encoding="UTF-8"?>
+<Server>
+	<SearchDevice />
+</Server>
+
+前端返回：
+<?xml version="1.0" encoding="UTF-8"?>
+<Device DeviceIP="设备IP" Mask="子网掩码" Gateway="网关" MAC="硬件地址" DefenceID="前端防区号" />
+/***************************************************************/
+
+//下面的通信全部采用tcp通信
+前端默认防区号 000
+
+0、报警主机启动/暂停服务
+<?xml version="1.0" encoding="UTF-8"?>
+<Server TargetIP="前端设备IP" NowTime="2015-09-14 09:26:41">
+	<StartServices />
+</Server>
+
+<?xml version="1.0" encoding="UTF-8"?>
+<Server TargetIP="前端设备IP" NowTime="2015-09-14 09:26:41">
+	<StopServices />
+</Server>
+
+前端返回：
+<?xml version="1.0" encoding="UTF-8"?>
+<Device DeviceIP="设备IP" DefenceID="前端防区号">
+	<!--0为停止采集分析   1为启动采集分析 -->
+	<DeviceStatus>前端设备的状态</DeviceStatus>
+</Device>
+
+1、报警主机下发网络配置信息
+<?xml version="1.0" encoding="UTF-8"?>
+<Server TargetIP="前端设备IP" NowTime="2015-09-14 09:26:41">
+	<!-- 报警主机IP -->
+	<ServerIP></ServerIP>
+	
+	<!-- 辅助控制杆IP -->
+	<SubIP></SubIP>
+	
+	<!-- 防区号 -->
+	<DefenceID></DefenceID>
+</Server>
+
+前端返回：
+<?xml version="1.0" encoding="UTF-8"?>
+<Device DeviceIP="设备IP" DefenceID="前端防区号">
+	OK
+</Device>
+
+2、报警主机获取前端基准图片
+<?xml version="1.0" encoding="UTF-8"?>
+<Server TargetIP="前端设备IP" NowTime="2015-09-14 09:26:41">
+	<GetBasicPic />
+</Server>
+
+前端返回：
+<?xml version="1.0" encoding="UTF-8"?>
+<Device DeviceIP="设备IP" DefenceID="前端防区号">
+	<!-- 主控制杆图片 -->
+	<MainStream>Base64的图片数据</MainStream>
+	
+	<!-- 辅助控制杆图片 -->
+	<SubStream>Base64的图片数据</SubStream>
+</Device>
+
+3、报警主机下发基准点配置信息
+<?xml version="1.0" encoding="UTF-8"?>
+<Server TargetIP="前端设备IP" NowTime="2015-09-14 09:26:41">
+	<!-- 主控制杆图片 -->
+	<MainStream>坐标点集合(123,200);(203,356)</MainStream>
+	
+	<!-- 辅助控制杆图片 -->
+	<SubStream>坐标点集合(123,200);(203,356)</SubStream>
+</Server>
+
+前端返回：
+<?xml version="1.0" encoding="UTF-8"?>
+<Device DeviceIP="设备IP" DefenceID="前端防区号">
+	OK
+</Device>
+
+4、报警主机轮询获取前端主控制杆图片
+<?xml version="1.0" encoding="UTF-8"?>
+<Server TargetIP="前端设备IP" NowTime="2015-09-14 09:26:41">
+	<GetMainStream />
+</Server>
+
+前端返回：
+<?xml version="1.0" encoding="UTF-8"?>
+<Device DeviceIP="设备IP" DefenceID="前端防区号">
+	<!-- 主控制杆图片 -->
+	<MainStream>Base64的图片数据</MainStream>
+</Device>
+
+5、报警主机调节前端灯珠亮度
+<?xml version="1.0" encoding="UTF-8"?>
+<Server TargetIP="前端设备IP" NowTime="2015-09-14 09:26:41">
+	<!-- id用来区分是主控制杆还是辅助控制杆 0为主控制杆   1为辅助控制杆 -->
+	<SetPWM  id="">PWM值为0-255</SetPWM>
+</Server>
+
+前端返回：
+<?xml version="1.0" encoding="UTF-8"?>
+<Device DeviceIP="设备IP" DefenceID="前端防区号">
+	OK
+</Device>
+
+6、报警主机重启前端设备
+<?xml version="1.0" encoding="UTF-8"?>
+<Server TargetIP="前端设备IP" NowTime="2015-09-14 09:26:41">
+	<SystemReboot />
+</Server>
+
+前端不需要返回
+
+
+7、报警主机升级前端设备
+前端设备监听6904端口，用于报警主机升级前端设备
+
+8、前端设备主动上传报警信息
+8.1、红外灯珠挡住报警
+<?xml version="1.0" encoding="UTF-8"?>
+<Device DeviceIP="设备IP" DefenceID="前端防区号">
+	<!-- id用来区分是主控制杆还是辅助控制杆 0为主控制杆   1为辅助控制杆 -->
+	<AlarmImage id="">Base64的图片数据</AlarmImage>
+</Device>
+
+8.2、4路传感器报警、灯珠杆顶端防拆报警、防水箱防拆报警、单道张力报警、开关量输入报警
+<?xml version="1.0" encoding="UTF-8"?>
+<Device DeviceIP="设备IP" DefenceID="前端防区号">
+	<!-- id用来区分上述几种类型 0--4路传感器报警、1--灯珠杆顶端防拆报警、2--防水箱防拆报警、3--单道张力报警、4--开关量输入报警 -->
+	<Alarm id="0" />
+</Device>
+
+前端上传的所有报警信息，报警主机不需要返回
+
+
+
+
+9、前端主控制杆和辅助控制杆通信
+9.0、主控制杆发送基本配置信息给辅助控制杆
+<?xml version="1.0" encoding="UTF-8"?>
+<MainControlDevice>
+	<MainIP</MainIP>
+	<SubDefenceID</SubDefenceID>
+</MainControlDevice>
+
+9.1、主控制杆发送基准点配置信息给辅助控制杆
+<?xml version="1.0" encoding="UTF-8"?>
+<MainControlDevice>
+	<SubStream>4#223,201,171,91#270,115#325,149</SubStream>
+</MainControlDevice>
+
+辅助控制杆不需要返回
+
+9.2、主控制杆调节辅助控制杆红外灯珠的亮度
+<?xml version="1.0" encoding="UTF-8"?>
+<MainControlDevice>
+	<SetPWM>PWM值为0-255</SetPWM>
+</MainControlDevice>
+
+辅助控制杆不需要返回
+
+9.3、辅助控制杆调节主控制杆红外灯珠的亮度
+<?xml version="1.0" encoding="UTF-8"?>
+<SubControlDevice>
+	<SetPWM>PWM值为0-255</SetPWM>
+</SubControlDevice>
+
+主控制杆不需要返回
+
+9.4、主控制杆获取辅助控制杆抓怕图片
+<?xml version="1.0" encoding="UTF-8"?>
+<MainControlDevice>
+	<GetSubStream />
+</MainControlDevice>
+
+辅助控制杆返回：
+<?xml version="1.0" encoding="UTF-8"?>
+<SubControlDevice>
+	<SubStream>Base64的图片数据</SubStream>
+</SubControlDevice>
+
+9.5、辅助控制杆自动发送报警图片至主控制杆
+<?xml version="1.0" encoding="UTF-8"?>
+<SubControlDevice>
+	<AlarmImage>Base64的图片数据</AlarmImage>
+</SubControlDevice>
+
+主控制杆不需要返回
