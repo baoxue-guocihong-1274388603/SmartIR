@@ -44,7 +44,7 @@ DeviceControl::DeviceControl(QObject *parent) :
     ioctl(wdt_fd,WDIOC_SETTIMEOUT,15);
 
     FeedWatchDogTimer = new QTimer(this);
-    FeedWatchDogTimer->setInterval(10 * 1000);
+    FeedWatchDogTimer->setInterval(5 * 1000);
     connect(FeedWatchDogTimer,SIGNAL(timeout()),this,SLOT(slotFeedWatchDog()));
     FeedWatchDogTimer->start();
 }
@@ -52,7 +52,6 @@ DeviceControl::DeviceControl(QObject *parent) :
 void DeviceControl::SubCameraPowerEnable()
 {
     ioctl(camera_fd,1);
-    CommonSetting::Sleep(2000);//等待辅助控制杆摄像头稳定
 }
 
 void DeviceControl::SubCameraPowerDisable()
@@ -88,13 +87,11 @@ void DeviceControl::AlarmDisable()
 void DeviceControl::BuzzerEnable()
 {
     ioctl(buzzer_fd,1);
-    CommonSetting::Sleep(3000);
 }
 
 void DeviceControl::BuzzerDisable()
 {
     ioctl(buzzer_fd,0);
-    CommonSetting::Sleep(3000);
 }
 
 void DeviceControl::slotFeedWatchDog()

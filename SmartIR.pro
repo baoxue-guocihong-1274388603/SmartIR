@@ -26,7 +26,6 @@ SOURCES += main.cpp\
     QextSerialPort/operateserial.cpp \
     receivefileserver.cpp \
     receivefilethread.cpp \
-    jpegencode.cpp
 
 HEADERS  += ipconfig.h \
     getcamerainfo.h \
@@ -43,7 +42,6 @@ HEADERS  += ipconfig.h \
     QextSerialPort/operateserial.h \
     receivefileserver.h \
     receivefilethread.h \
-    jpegencode.h
 
 unix{
 INCLUDEPATH += opencv/linux/arm/include

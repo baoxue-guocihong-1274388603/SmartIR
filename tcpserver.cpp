@@ -43,25 +43,24 @@ TcpServer::TcpServer(QString MainVideoName, QString SubVideoName, QObject *paren
 
     //主控制杆采集线程
     if(!MainVideoName.isEmpty()){
-        MainWorkThread = new WorkThread(MainVideoName,0,640,480,16,WorkThread::MainStream,this);
+        MainWorkThread = new WorkThread(MainVideoName,640,480,16,V4L2_PIX_FMT_YUYV,this);
         MainWorkThread->factor = GlobalConfig::MainStreamFactor;
         MainWorkThread->SelectRect = GlobalConfig::MainStreamSelectRect;
         MainWorkThread->LightPoint = GlobalConfig::MainStreamLightPoint;
-        connect(MainWorkThread,SIGNAL(signalCaptureNormalFrame(QImage&)),this, SLOT(slotMainCaputreNormalFrame(QImage&)),Qt::BlockingQueuedConnection);
-        connect(MainWorkThread,SIGNAL(signalCaputreAlarmFrame(QImage&)),this, SLOT(slotMainCaputreAlarmFrame(QImage&)),Qt::BlockingQueuedConnection);
-        connect(MainWorkThread,SIGNAL(signalUSBCameraOffline()),this,SLOT(slotUSBCameraOffline()),Qt::BlockingQueuedConnection);
+        connect(MainWorkThread,SIGNAL(signalAlarmImage()),this, SLOT(slotMainAlarmImage()),Qt::BlockingQueuedConnection);
+        connect(MainWorkThread,SIGNAL(signalUSBCameraOffline()),this,SLOT(slotMainUSBCameraOffline()),Qt::BlockingQueuedConnection);
         PreMainThreadState = MainWorkThread->ThreadState;
         MainWorkThread->start();
     }
 
     //辅助控制杆采集线程
     if(!SubVideoName.isEmpty()){
-        SubWorkThread = new WorkThread(SubVideoName,0,640,480,16,WorkThread::SubStream,this);
+        SubWorkThread = new WorkThread(SubVideoName,640,480,16,V4L2_PIX_FMT_YUYV,this);
         SubWorkThread->factor = GlobalConfig::SubStreamFactor;
         SubWorkThread->SelectRect = GlobalConfig::SubStreamSelectRect;
         SubWorkThread->LightPoint = GlobalConfig::SubStreamLightPoint;
-        connect(SubWorkThread,SIGNAL(signalCaputreAlarmFrame(QImage&)),this, SLOT(slotSubCaputreAlarmFrame(QImage&)),Qt::BlockingQueuedConnection);
-        connect(SubWorkThread,SIGNAL(signalUSBCameraOffline()),this,SLOT(slotUSBCameraOffline()),Qt::BlockingQueuedConnection);
+        connect(SubWorkThread,SIGNAL(signalAlarmImage()),this, SLOT(slotSubAlarmImage()),Qt::BlockingQueuedConnection);
+        connect(SubWorkThread,SIGNAL(signalUSBCameraOffline()),this,SLOT(slotSubUSBCameraOffline()),Qt::BlockingQueuedConnection);
         PreSubThreadState = SubWorkThread->ThreadState;
         SubWorkThread->start();
     }
@@ -149,7 +148,7 @@ void TcpServer::slotRecvMainControlMsg()
         QString errorMsg;
         int errorLine, errorColumn;
         bool isSetPWM = false;//添加根据pwm来设置辅助控制杆灯珠的亮度
-        bool isGetSubStream = false;//本设备返回辅助控制杆图片给左边主控制杆
+        bool isGetSubStream = false;//本设备返回辅助控制杆基准图片给报警主机
         quint8 PWM;
 
         if(MainControlSocket->isOpen() && MainControlSocket->isReadable()) {
@@ -180,7 +179,7 @@ void TcpServer::slotRecvMainControlMsg()
                 return;
             }
 
-//            qDebug() << "slotRecvMainControlMsg" << FullPackage;
+            qDebug() << "slotRecvMainControlMsg" << FullPackage;
 
             QDomElement RootElement = dom.documentElement();//获取根元素
             if(RootElement.tagName() == "MainControlDevice"){ //根元素名称
@@ -242,7 +241,7 @@ void TcpServer::slotRecvMainControlMsg()
                     operate_serial->SetPWM(PWM,0x01);
                 }
 
-                //本设备返回辅助控制杆图片给左边主控制杆
+                //本设备返回辅助控制杆基准图片给报警主机
                 if(isGetSubStream){
                     QString MessageMerge;
                     QDomDocument AckDom;
@@ -252,54 +251,24 @@ void TcpServer::slotRecvMainControlMsg()
                     AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
 
                     //创建根元素
-                    QDomElement RootElement = AckDom.createElement("SubControlDevice");
+                    QDomElement RootElement = AckDom.createElement("Device");
+                    RootElement.setAttribute("DeviceIP",GlobalConfig::MainIP);
+                    RootElement.setAttribute("DefenceID",GlobalConfig::SubDefenceID);
                     AckDom.appendChild(RootElement);
 
                     //创建SubStream元素
                     QDomElement SubStreamElement = AckDom.createElement("SubStream");
-                    QString SubStreamBase64;
-                    unsigned char *rgb_buff;
+                    QString SubStreamBase64 = QString("");
 
                     if(!SubStreamVideoName.isEmpty()){
-                        rgb_buff = (unsigned char*)malloc(SubWorkThread->width * SubWorkThread->height * 24 / 8);
                         QImage image_rgb888;
 
-                        int	v4l2BufIndex = SubWorkThread->operatecamera->ReadFrame(SubWorkThread->camera_fd,SubWorkThread->img_buffers);
-                        if(v4l2BufIndex < 0){
-                            SubWorkThread->operatecamera->CleanupCaptureDevice(SubWorkThread->camera_fd,&SubWorkThread->img_buffers);
-                            SubWorkThread->camera_fd = SubWorkThread->operatecamera->OpenCamera(SubWorkThread->VideoName);
-                            if(SubWorkThread->camera_fd > 0){
-                                if(SubWorkThread->operatecamera->InitCameraDevice(SubWorkThread->camera_fd,&SubWorkThread->img_buffers,SubWorkThread->width,SubWorkThread->height,V4L2_PIX_FMT_YUYV) > 0)
-                                {
-                                    v4l2BufIndex = SubWorkThread->operatecamera->ReadFrame(SubWorkThread->camera_fd,SubWorkThread->img_buffers);
-                                    if(v4l2BufIndex > 0){
-                                        if(SubWorkThread->YUYVToRGB24_FFmpeg(SubWorkThread->operatecamera->yuyv_buff, rgb_buff)){
-                                            image_rgb888 = QImage((uchar *)rgb_buff, SubWorkThread->width, SubWorkThread->height, QImage::Format_RGB888);
-
-                                        }else{
-                                            printf("Get SubWorkThread YUYVToRGB24_FFmpeg Failed\n");
-                                            image_rgb888 = QImage();
-                                        }
-                                    }else{
-                                        printf("Get SubWorkThread ReadFrame Failed\n");
-                                        image_rgb888 = QImage();
-                                    }
-                                }else{
-                                    printf("Get SubWorkThread InitCameraDevice Failed\n");
-                                    image_rgb888 = QImage();
-                                }
-                            }else{
-                                printf("Get SubWorkThread OpenCamera Failed\n");
-                                image_rgb888 = QImage();
+                        if (SubWorkThread->operatecamera->ReadFrame()){
+                            if(SubWorkThread->YUYVToRGB24_FFmpeg(SubWorkThread->operatecamera->yuyv_buff, SubWorkThread->rgb_buff)){
+                                image_rgb888 = QImage((quint8 *)SubWorkThread->rgb_buff, SubWorkThread->width, SubWorkThread->height, QImage::Format_RGB888);
                             }
                         }else{
-                            if(SubWorkThread->YUYVToRGB24_FFmpeg(SubWorkThread->operatecamera->yuyv_buff, rgb_buff)){
-                                image_rgb888 = QImage((uchar *)rgb_buff, SubWorkThread->width, SubWorkThread->height, QImage::Format_RGB888);
-
-                            }else{
-                                printf("Get SubWorkThread YUYVToRGB24_FFmpeg Failed\n");
-                                image_rgb888 = QImage();
-                            }
+                            image_rgb888 = QImage();
                         }
 
                         if(!image_rgb888.isNull()){
@@ -308,11 +277,14 @@ void TcpServer::slotRecvMainControlMsg()
                             image_rgb888.save(&buffer,"JPG");
                             SubStreamBase64 = data.toBase64();//base64的图片数据
                         }else{
-                            SubStreamBase64 = QString("");
+                            SubStreamBase64 = QString("辅助控制杆摄像头获取图片失败");
                         }
+                    }else{
+                        SubStreamBase64 = QString("本设备没有辅助控制杆，不能获取子码流");
                     }
 
-                    QDomText SubStreamElementText = AckDom.createTextNode(SubStreamBase64);
+                    QDomText SubStreamElementText =
+                            AckDom.createTextNode(SubStreamBase64);
                     SubStreamElement.appendChild(SubStreamElementText);
                     RootElement.appendChild(SubStreamElement);
 
@@ -322,15 +294,12 @@ void TcpServer::slotRecvMainControlMsg()
                     int length = MessageMerge.size();
                     MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
 
-                    if(MainControlSocket != NULL){
-                        if(MainControlSocket->isOpen() && MainControlSocket->isWritable()) {
-                            MainControlSocket->write(MessageMerge.toAscii());
-                            MainControlSocket->waitForBytesWritten(300);
-                            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "Return SubStream to MainControl";
-                        }
+                    if(AlarmHostConfigSocket->isOpen() && AlarmHostConfigSocket->isWritable())
+                    {
+                        AlarmHostConfigSocket->write(MessageMerge.toAscii());
+                        AlarmHostConfigSocket->waitForBytesWritten(300);
+                        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "Return SubStream Pic";
                     }
-
-                    free(rgb_buff);
                 }
             }
         }
@@ -343,12 +312,7 @@ void TcpServer::slotMainControlDisconnect()
     MainControlSocket = NULL;
 }
 
-void TcpServer::slotMainCaputreNormalFrame(QImage &img)
-{
-    MainNormalImage = img;
-}
-
-void TcpServer::slotMainCaputreAlarmFrame(QImage &img)
+void TcpServer::slotMainAlarmImage()
 {
     qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "MainStream Alarm";
 
@@ -371,7 +335,7 @@ void TcpServer::slotMainCaputreAlarmFrame(QImage &img)
 
     QByteArray data;
     QBuffer buffer(&data);
-    img.save(&buffer,"JPG");
+    MainWorkThread->AlarmImage.save(&buffer,"JPG");
     QString AlarmImageBase64 = data.toBase64();//base64的图片数据
 
     QDomText AlarmImageElementText = AckDom.createTextNode(AlarmImageBase64);
@@ -387,7 +351,7 @@ void TcpServer::slotMainCaputreAlarmFrame(QImage &img)
     AlarmMsgBuffer.append(MessageMerge);
 }
 
-void TcpServer::slotSubCaputreAlarmFrame(QImage &img)
+void TcpServer::slotSubAlarmImage()
 {
     qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "SubStream Alarm";
 
@@ -410,7 +374,7 @@ void TcpServer::slotSubCaputreAlarmFrame(QImage &img)
 
     QByteArray data;
     QBuffer buffer(&data);
-    img.save(&buffer,"JPG");
+    SubWorkThread->AlarmImage.save(&buffer,"JPG");
     QString AlarmImageBase64 = data.toBase64();//base64的图片数据
 
     QDomText AlarmImageElementText = AckDom.createTextNode(AlarmImageBase64);
@@ -463,7 +427,7 @@ void TcpServer::slotSendAlarmMsg()
         QString XmlData = AlarmMsgBuffer.takeFirst();
 
         AlarmHostAlarmSocket->abort();
-        AlarmHostAlarmSocket->connectToHost(GlobalConfig::ServerIP,GlobalConfig::AlarmHostAlarmPort);
+        AlarmHostAlarmSocket->connectToHost(GlobalConfig::ServerIP,GlobalConfig::ServerPort);
         bool state = AlarmHostAlarmSocket->waitForConnected(100);
         if(state){
             qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "AlarmHostAlarmConnectStateFlag:ConnectedState";
@@ -516,9 +480,7 @@ void TcpServer::slotRecvSubControlMsg()
     QString errorMsg;
     int errorLine, errorColumn;
     bool isSetPWM = false;//添加根据pwm来设置左边主控制杆灯珠的亮度
-    bool isSubStream = false;//接收辅助控制杆图片
     quint8 PWM;
-    QString SubStreamBase64;
 
     if(SubControlSocket->isOpen() && SubControlSocket->isReadable()) {
         SubControlBuffer.append(SubControlSocket->readAll());
@@ -548,7 +510,7 @@ void TcpServer::slotRecvSubControlMsg()
             return;
         }
 
-//        qDebug() << "slotRecvSubControlMsg" << FullPackage;
+        qDebug() << "slotRecvSubControlMsg" << FullPackage;
 
         QDomElement RootElement = dom.documentElement();//获取根元素
         if(RootElement.tagName() == "SubControlDevice"){ //根元素名称
@@ -560,114 +522,12 @@ void TcpServer::slotRecvSubControlMsg()
                     PWM = firstChildElement.text().toUInt();
                 }
 
-                if(firstChildNode.nodeName() == "SubStream"){
-                    isSubStream = true;
-                    QDomElement firstChildElement = firstChildNode.toElement();
-                    SubStreamBase64 = firstChildElement.text();
-                }
-
                 firstChildNode = firstChildNode.nextSibling();//下一个节点
             }
 
             if(isSetPWM){
                 //添加根据pwm来设置左边主控制杆灯珠的亮度
                 operate_serial->SetPWM(PWM,0x00);
-            }
-
-            if(isSubStream){
-                QString MessageMerge;
-                QDomDocument AckDom;
-
-                //xml声明
-                QString XmlHeader("version=\"1.0\" encoding=\"UTF-8\"");
-                AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
-
-                //创建根元素
-                QDomElement RootElement = AckDom.createElement("Device");
-                RootElement.setAttribute("DeviceIP",GlobalConfig::LocalHostIP);
-                RootElement.setAttribute("DefenceID",GlobalConfig::MainDefenceID);
-                AckDom.appendChild(RootElement);
-
-                //创建MainStream元素
-                QDomElement MainStreamElement = AckDom.createElement("MainStream");
-                QString MainStreamBase64 = QString("");
-                unsigned char *rgb_buff = NULL;
-
-                if(!MainStreamVideoName.isEmpty()){
-                    rgb_buff = (unsigned char*)malloc(MainWorkThread->width * MainWorkThread->height * 24 / 8);
-                    QImage image_rgb888;
-
-                    int	v4l2BufIndex = MainWorkThread->operatecamera->ReadFrame(MainWorkThread->camera_fd,MainWorkThread->img_buffers);
-                    if(v4l2BufIndex < 0){
-                        MainWorkThread->operatecamera->CleanupCaptureDevice(MainWorkThread->camera_fd,&MainWorkThread->img_buffers);
-                        MainWorkThread->camera_fd = MainWorkThread->operatecamera->OpenCamera(MainWorkThread->VideoName);
-                        if(MainWorkThread->camera_fd > 0){
-                           if(MainWorkThread->operatecamera->InitCameraDevice(MainWorkThread->camera_fd,&MainWorkThread->img_buffers,MainWorkThread->width,MainWorkThread->height,V4L2_PIX_FMT_YUYV) > 0)
-                           {
-                               v4l2BufIndex = MainWorkThread->operatecamera->ReadFrame(MainWorkThread->camera_fd,MainWorkThread->img_buffers);
-                               if(v4l2BufIndex > 0){
-                                   if(MainWorkThread->YUYVToRGB24_FFmpeg(MainWorkThread->operatecamera->yuyv_buff, rgb_buff)){
-                                       image_rgb888 = QImage((uchar *)rgb_buff, MainWorkThread->width, MainWorkThread->height, QImage::Format_RGB888);
-
-                                   }else{
-                                       printf("Get MainWorkThread YUYVToRGB24_FFmpeg Failed\n");
-                                       image_rgb888 = QImage();
-                                   }
-                               }else{
-                                   printf("Get MainWorkThread ReadFrame Failed\n");
-                                   image_rgb888 = QImage();
-                               }
-                           }else{
-                               printf("Get MainWorkThread InitCameraDevice Failed\n");
-                               image_rgb888 = QImage();
-                           }
-                        }else{
-                            printf("Get MainWorkThread OpenCamera Failed\n");
-                            image_rgb888 = QImage();
-                        }
-                    }else{
-                        if(MainWorkThread->YUYVToRGB24_FFmpeg(MainWorkThread->operatecamera->yuyv_buff, rgb_buff)){
-                            image_rgb888 = QImage((uchar *)rgb_buff, MainWorkThread->width, MainWorkThread->height, QImage::Format_RGB888);
-
-                        }else{
-                            printf("Get MainWorkThread YUYVToRGB24_FFmpeg Failed\n");
-                            image_rgb888 = QImage();
-                        }
-                    }
-
-                    if(!image_rgb888.isNull()){
-                        QByteArray data;
-                        QBuffer buffer(&data);
-                        image_rgb888.save(&buffer,"JPG");
-                        MainStreamBase64 = data.toBase64();//base64的图片数据
-                    }else{
-                        MainStreamBase64 = QString("");
-                    }
-                }
-
-                QDomText MainStreamElementText = AckDom.createTextNode(MainStreamBase64);
-                MainStreamElement.appendChild(MainStreamElementText);
-                RootElement.appendChild(MainStreamElement);
-
-                //创建SubStream元素
-                QDomElement SubStreamElement = AckDom.createElement("SubStream");
-                QDomText SubStreamElementText = AckDom.createTextNode(SubStreamBase64);
-                SubStreamElement.appendChild(SubStreamElementText);
-                RootElement.appendChild(SubStreamElement);
-
-                QTextStream Out(&MessageMerge);
-                AckDom.save(Out,4);
-
-                int length = MessageMerge.size();
-                MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
-
-                if(AlarmHostConfigSocket->isOpen() && AlarmHostConfigSocket->isWritable()) {
-                    AlarmHostConfigSocket->write(MessageMerge.toAscii());
-                    AlarmHostConfigSocket->waitForBytesWritten(300);
-                    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "Return Basic Pic";
-                }
-
-                free(rgb_buff);
             }
         }
     }
@@ -847,6 +707,48 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                         }
                     }
 
+
+                    if(firstChildNode.nodeName() == "CameraSleepTime"){
+                        //采集间隔（单位毫秒）
+                        QDomElement firstChildElement = firstChildNode.toElement();
+                        QString CameraSleepTime = firstChildElement.text();
+                        CommonSetting::WriteSettings("/bin/config.ini","AppConfig/CameraSleepTime",CameraSleepTime);
+
+                        GlobalConfig::CameraSleepTime = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/CameraSleepTime").toInt();
+                    }
+
+                    if(firstChildNode.nodeName() == "DeviceMacAddr"){
+                        //设备MAC地址（同一局域网内设备不能有重复的MAC地址）
+                        QDomElement firstChildElement = firstChildNode.toElement();
+                        QString DeviceMacAddr = firstChildElement.text();
+                        CommonSetting::WriteSettings("/bin/config.ini","AppConfig/DeviceMacAddr",DeviceMacAddr);
+
+                        GlobalConfig::DeviceMacAddr = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/DeviceMacAddr");
+
+                        //重启网卡
+                        system("/etc/init.d/ifconfig-eth0");
+
+                        GlobalConfig::LocalHostIP = CommonSetting::GetLocalHostIP();
+                        GlobalConfig::Gateway = CommonSetting::GetGateway();
+                        GlobalConfig::MAC = CommonSetting::ReadMacAddress();
+                    }
+
+                    if(firstChildNode.nodeName() == "DeviceIPAddrPrefix"){
+                        //设备网段 默认192.168.8.
+                        QDomElement firstChildElement = firstChildNode.toElement();
+                        QString DeviceIPAddrPrefix = firstChildElement.text();
+                        CommonSetting::WriteSettings("/bin/config.ini","AppConfig/DeviceIPAddrPrefix",DeviceIPAddrPrefix);
+
+                        GlobalConfig::DeviceIPAddrPrefix = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/DeviceIPAddrPrefix");
+
+                        //重启网卡
+                        system("/etc/init.d/ifconfig-eth0");
+
+                        GlobalConfig::LocalHostIP = CommonSetting::GetLocalHostIP();
+                        GlobalConfig::Gateway = CommonSetting::GetGateway();
+                        GlobalConfig::MAC = CommonSetting::ReadMacAddress();
+                    }
+
                     if(firstChildNode.nodeName() == "GetBasicPic"){
                             isGetBasicPic = true;
                     }
@@ -942,6 +844,11 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                             DeviceStatus = QString("1");
                         }
                     }
+
+                    if(MainStreamVideoName.isEmpty() && SubStreamVideoName.isEmpty()) {
+                        DeviceStatus = QString("0");
+                    }
+
                     QDomText DeviceStatusElementText = AckDom.createTextNode(DeviceStatus);
                     DeviceStatusElement.appendChild(DeviceStatusElementText);
                     RootElement.appendChild(DeviceStatusElement);
@@ -1120,43 +1027,109 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                         }
                     }else{
                         //有主控制杆和相应的辅助控制杆，能获取基准图片
-                        QString MessageMerge;
-                        QDomDocument AckDom;
+                        //1.发送GetSubStream包给辅助控制杆
+                        {
+                            QString MessageMerge;
+                            QDomDocument AckDom;
 
-                        //xml声明
-                        QString XmlHeader("version=\"1.0\" encoding=\"UTF-8\"");
-                        AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
+                            //xml声明
+                            QString XmlHeader("version=\"1.0\" encoding=\"UTF-8\"");
+                            AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
 
-                        //创建根元素
-                        QDomElement RootElement = AckDom.createElement("MainControlDevice");
-                        AckDom.appendChild(RootElement);
+                            //创建根元素
+                            QDomElement RootElement = AckDom.createElement("MainControlDevice");
+                            AckDom.appendChild(RootElement);
 
-                        //创建GetSubStream元素
-                        QDomElement GetSubStreamElement = AckDom.createElement("GetSubStream");
-                        RootElement.appendChild(GetSubStreamElement);
+                            //创建GetSubStream元素
+                            QDomElement GetSubStreamElement =
+                                    AckDom.createElement("GetSubStream");
+                            RootElement.appendChild(GetSubStreamElement);
 
-                        QTextStream Out(&MessageMerge);
-                        AckDom.save(Out,4);
+                            QTextStream Out(&MessageMerge);
+                            AckDom.save(Out,4);
 
-                        int length = MessageMerge.size();
-                        MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
+                            int length = MessageMerge.size();
+                            MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
 
-                        if(SubControlConnectStateFlag == TcpServer::ConnectedState){
-                            if(SubControlSocket->isOpen() && SubControlSocket->isWritable()) {
-                                SubControlSocket->write(MessageMerge.toAscii());
-                                SubControlSocket->waitForBytesWritten(300);
-                                qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-                            }
-                        }else if(SubControlConnectStateFlag == TcpServer::DisConnectedState){
-                            SubControlSocket->connectToHost(GlobalConfig::SubIP,GlobalConfig::MainControlServerPort);
-                            bool state = SubControlSocket->waitForConnected(100);
-                            if(state){
+                            if(SubControlConnectStateFlag == TcpServer::ConnectedState){
                                 if(SubControlSocket->isOpen() && SubControlSocket->isWritable())
                                 {
                                     SubControlSocket->write(MessageMerge.toAscii());
                                     SubControlSocket->waitForBytesWritten(300);
                                     qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
                                 }
+                            }else if(SubControlConnectStateFlag == TcpServer::DisConnectedState){
+                                SubControlSocket->connectToHost(GlobalConfig::SubIP,GlobalConfig::MainControlServerPort);
+                                bool state = SubControlSocket->waitForConnected(100);
+                                if(state){
+                                    if(SubControlSocket->isOpen() && SubControlSocket->isWritable())
+                                    {
+                                        SubControlSocket->write(MessageMerge.toAscii());
+                                        SubControlSocket->waitForBytesWritten(300);
+                                        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
+                                    }
+                                }
+                            }
+                        }
+
+                        //2.获取主控制杆图片，并且发送给报警主机
+                        {
+                            QString MessageMerge;
+                            QDomDocument AckDom;
+
+                            //xml声明
+                            QString XmlHeader("version=\"1.0\" encoding=\"UTF-8\"");
+                            AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
+
+                            //创建根元素
+                            QDomElement RootElement = AckDom.createElement("Device");
+                            RootElement.setAttribute("DeviceIP",GlobalConfig::LocalHostIP);
+                            RootElement.setAttribute("DefenceID",GlobalConfig::MainDefenceID);
+                            AckDom.appendChild(RootElement);
+
+                            //创建MainStream元素
+                            QDomElement MainStreamElement = AckDom.createElement("MainStream");
+                            QString MainStreamBase64 = QString("");
+
+                            if(!MainStreamVideoName.isEmpty()){
+                                QImage image_rgb888;
+
+                                if (MainWorkThread->operatecamera->ReadFrame()){
+                                    if(MainWorkThread->YUYVToRGB24_FFmpeg(MainWorkThread->operatecamera->yuyv_buff, MainWorkThread->rgb_buff)){
+                                        image_rgb888 = QImage((quint8 *)MainWorkThread->rgb_buff, MainWorkThread->width, MainWorkThread->height, QImage::Format_RGB888);
+                                    }
+                                }else{
+                                    image_rgb888 = QImage();
+                                }
+
+                                if(!image_rgb888.isNull()){
+                                    QByteArray data;
+                                    QBuffer buffer(&data);
+                                    image_rgb888.save(&buffer,"JPG");
+                                    MainStreamBase64 = data.toBase64();//base64的图片数据
+                                }else{
+                                    MainStreamBase64 = QString("主控制杆摄像头获取图片失败");
+                                }
+                            }else{
+                                MainStreamBase64 = QString("本设备没有主控制杆，不能获取主码流");
+                            }
+
+                            QDomText MainStreamElementText =
+                                    AckDom.createTextNode(MainStreamBase64);
+                            MainStreamElement.appendChild(MainStreamElementText);
+                            RootElement.appendChild(MainStreamElement);
+
+                            QTextStream Out(&MessageMerge);
+                            AckDom.save(Out,4);
+
+                            int length = MessageMerge.size();
+                            MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
+
+                            if(AlarmHostConfigSocket->isOpen() && AlarmHostConfigSocket->isWritable())
+                            {
+                                AlarmHostConfigSocket->write(MessageMerge.toAscii());
+                                AlarmHostConfigSocket->waitForBytesWritten(300);
+                                qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "Return MainStream Pic";
                             }
                         }
                     }
@@ -1179,11 +1152,18 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
 
                         //创建MainStream元素
                         QDomElement MainStreamElement = AckDom.createElement("MainStream");
+                        QString MainStreamBase64;
 
                         QByteArray data;
                         QBuffer buffer(&data);
-                        MainNormalImage.save(&buffer,"JPG");
-                        QString MainStreamBase64 = data.toBase64();//base64的图片数据
+
+                        if (!MainStreamVideoName.isEmpty()) {
+                            MainWorkThread->NormalImage.save(&buffer,"JPG");
+                            MainStreamBase64 = data.toBase64();//base64的图片数据
+                        } else {
+                            MainStreamBase64 = QString("");
+                        }
+
 
                         QDomText MainStreamElementText = AckDom.createTextNode(MainStreamBase64);
                         MainStreamElement.appendChild(MainStreamElementText);
@@ -1201,7 +1181,7 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                             qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "GetMainStream";
                         }
 
-                        MainNormalImage = QImage();
+                        MainWorkThread->NormalImage = QImage();
                     }
                 }
 
@@ -1341,36 +1321,24 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
     }
 }
 
-void TcpServer::slotUSBCameraOffline()
+void TcpServer::slotMainUSBCameraOffline()
 {
-    if(!MainStreamVideoName.isEmpty()){
-        MainWorkThread->isStopCapture = true;
-    }
+    GetCameraInfo::Instance()->GetMainCameraDevice();
 
-    if(!SubStreamVideoName.isEmpty()){
-        SubWorkThread->isStopCapture = true;
-    }
+    MainWorkThread->operatecamera->VideoName = GetCameraInfo::MainCamera;
+    MainWorkThread->VideoName = GetCameraInfo::MainCamera;
+    MainWorkThread->isReInitialize = true;
+    MainWorkThread->isStopCapture = false;
+}
 
-    DeviceControl::Instance()->BuzzerEnable();
-    DeviceControl::Instance()->SubCameraPowerDisable();
-    CommonSetting::Sleep(3000);
-    DeviceControl::Instance()->UsbHubReset();
-    CommonSetting::Sleep(3000);
-    GetCameraInfo getcamerainfo;
+void TcpServer::slotSubUSBCameraOffline()
+{
+    GetCameraInfo::Instance()->GetMainCameraDevice();
 
-    if(!MainStreamVideoName.isEmpty()){
-        MainWorkThread->VideoName = getcamerainfo.MainCamera;
-        MainWorkThread->isReInitialize = true;
-        MainWorkThread->isStopCapture = false;
-    }
-
-    CommonSetting::Sleep(2000);
-
-    if(!SubStreamVideoName.isEmpty()){
-        SubWorkThread->VideoName = getcamerainfo.SubCamera;
-        SubWorkThread->isReInitialize = true;
-        SubWorkThread->isStopCapture = false;
-    }
+    SubWorkThread->operatecamera->VideoName = GetCameraInfo::SubCamera;
+    SubWorkThread->VideoName = GetCameraInfo::SubCamera;
+    SubWorkThread->isReInitialize = true;
+    SubWorkThread->isStopCapture = false;
 }
 
 void TcpServer::slotSetSystemTime()
@@ -1378,15 +1346,14 @@ void TcpServer::slotSetSystemTime()
     CommonSetting::SettingSystemDateTime(SystemTime);
 }
 
-
-void TcpServer::enableKeepAlive(int camera_fd, int max_idle, int keep_count, int keep_interval)
+void TcpServer::enableKeepAlive(int fd, int max_idle, int keep_count, int keep_interval)
 {
     int enableKeepAlive = 1;
 
-    setsockopt(camera_fd, SOL_SOCKET, SO_KEEPALIVE, &enableKeepAlive, sizeof(enableKeepAlive));
-    setsockopt(camera_fd, SOL_TCP, TCP_KEEPIDLE, &max_idle, sizeof(max_idle));
-    setsockopt(camera_fd, SOL_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count));
-    setsockopt(camera_fd, SOL_TCP, TCP_KEEPINTVL, &keep_interval, sizeof(keep_interval));
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enableKeepAlive, sizeof(enableKeepAlive));
+    setsockopt(fd, SOL_TCP, TCP_KEEPIDLE, &max_idle, sizeof(max_idle));
+    setsockopt(fd, SOL_TCP, TCP_KEEPCNT, &keep_count, sizeof(keep_count));
+    setsockopt(fd, SOL_TCP, TCP_KEEPINTVL, &keep_interval, sizeof(keep_interval));
 }
 
 void TcpServer::slotReConnectSubControl()
@@ -1397,62 +1364,5 @@ void TcpServer::slotReConnectSubControl()
 
 void TcpServer::slotCheckWorkThreadState()
 {
-    CheckWorkThreadStateTimer->stop();
 
-    if(!MainStreamVideoName.isEmpty()){
-        static quint8 i = 0;
-        if(PreMainThreadState == MainWorkThread->ThreadState){
-            i++;
-        }else{
-            i = 0;
-        }
-
-        PreMainThreadState = MainWorkThread->ThreadState;
-
-        if(i == 3){
-            i = 0;
-//            MainWorkThread->CleanupCaptureDevice();
-//            delete MainWorkThread;
-//            MainWorkThread = new WorkThread(MainStreamVideoName,640,480,16,WorkThread::MainStream,this);
-//            MainWorkThread->factor = GlobalConfig::MainStreamFactor;
-//            MainWorkThread->SelectRect = GlobalConfig::MainStreamSelectRect;
-//            MainWorkThread->LightPoint = GlobalConfig::MainStreamLightPoint;
-//            connect(MainWorkThread,SIGNAL(signalCaptureNormalFrame(QImage)),this, SLOT(slotMainCaputreNormalFrame(QImage)));
-//            connect(MainWorkThread,SIGNAL(signalCaputreAlarmFrame(QImage)),this, SLOT(slotMainCaputreAlarmFrame(QImage)));
-//            connect(MainWorkThread,SIGNAL(signalUSBCameraOffline()),this,SLOT(slotUSBCameraOffline()));
-//            MainWorkThread->start();
-            system("reboot");
-            QString str = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") + "MainWorkThread reboot\n";
-            CommonSetting::WriteCommonFile("/mnt/log.txt",str);
-        }
-    }
-
-    if(!SubStreamVideoName.isEmpty()){
-        static quint8 i = 0;
-        if(PreSubThreadState == SubWorkThread->ThreadState){
-            i++;
-        }else{
-            i = 0;
-        }
-
-        PreSubThreadState = SubWorkThread->ThreadState;
-
-        if(i == 3){
-            i = 0;
-//            SubWorkThread->CleanupCaptureDevice();
-//            delete SubWorkThread;
-//            SubWorkThread = new WorkThread(SubStreamVideoName,352,288,16,WorkThread::SubStream,this);
-//            SubWorkThread->factor = GlobalConfig::SubStreamFactor;
-//            SubWorkThread->SelectRect = GlobalConfig::SubStreamSelectRect;
-//            SubWorkThread->LightPoint = GlobalConfig::SubStreamLightPoint;
-//            connect(SubWorkThread,SIGNAL(signalCaputreAlarmFrame(QImage)),this, SLOT(slotSubCaputreAlarmFrame(QImage)));
-//            connect(SubWorkThread,SIGNAL(signalUSBCameraOffline()),this,SLOT(slotUSBCameraOffline()));
-//            SubWorkThread->start();
-            system("reboot");
-            QString str = QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") + "SubWorkThread reboot\n";
-            CommonSetting::WriteCommonFile("/mnt/log.txt",str);
-        }
-    }
-	
-    CheckWorkThreadStateTimer->start();
 }

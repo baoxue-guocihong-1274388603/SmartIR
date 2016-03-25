@@ -2,6 +2,8 @@
 #define GETCAMERAINFO_H
 
 #include <QObject>
+#include <QMutex>
+#include <QMutexLocker>
 
 class GetCameraInfo : public QObject
 {
@@ -9,9 +11,24 @@ class GetCameraInfo : public QObject
 public:
     explicit GetCameraInfo(QObject *parent = 0);
 
+    static GetCameraInfo *Instance() {
+        static QMutex mutex;
+        if (!_instance) {
+            QMutexLocker locker(&mutex);
+            if (!_instance) {
+                _instance = new GetCameraInfo;
+            }
+        }
+        return _instance;
+    }
 public:
-    QString MainCamera;//主控制杆摄像头设备文件
-    QString SubCamera;//辅助控制杆摄像头设备文件
+    static GetCameraInfo *_instance;
+
+    static QString MainCamera;//主控制杆摄像头设备文件
+    static QString SubCamera;//辅助控制杆摄像头设备文件
+
+    void GetMainCameraDevice();//主控制杆摄像头掉线时，获取主控制杆摄像头设备文件
+    void GetSubCameraDevice();//辅助控制杆摄像头掉线时，获取辅助控制杆摄像头设备文件
 };
 
 #endif // GETCAMERAINFO_H

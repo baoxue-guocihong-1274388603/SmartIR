@@ -62,7 +62,7 @@
 	<!-- 设备MAC地址（同一局域网内设备不能有重复的MAC地址） -->
 	<DeviceMacAddr></DeviceMacAddr>	
 	<!-- 设备网段 默认192.168.8 -->
-	<DeviceIPAddrPrefix></DeviceIPAddrPrefix>
+	<DeviceIPAddr></DeviceIPAddr>
 </Server>
 
 前端返回：

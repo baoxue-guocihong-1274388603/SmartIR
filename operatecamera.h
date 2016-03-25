@@ -18,7 +18,7 @@
 
 typedef struct ImgBuffer
 {
-    __u8 *start;
+    quint8 *start;
     size_t length;
 }ImgBuffer;
 
@@ -26,17 +26,20 @@ class OperateCamera : public QObject
 {
     Q_OBJECT
 public:
-    explicit OperateCamera(int input, int width, int height, int BPP, QObject *parent = 0);
-
-    int OpenCamera(QString VideoName);
-    int InitCameraDevice(int fd, ImgBuffer **imgBufsPtr, int width, int height,
-                         __u32 pixelformat);
-    void CleanupCaptureDevice(int fd, ImgBuffer **imgBuffers);
-    int ReadFrame(int fd, ImgBuffer *imgBuffers);
+    explicit OperateCamera(QString VideoName, quint32 width, quint32 height, quint32 BPP, quint32 pixelformat, QObject *parent = 0);
+    bool OpenCamera();
+    bool InitCameraDevice();
+    void CleanupCaptureDevice();
+    bool ReadFrame();
 
 public:
-    uchar *yuyv_buff;
-    int input;
+    QString VideoName;
+    int fd;
+    ImgBuffer *img_buffers;
+    quint32 width;
+    quint32 height;
+    quint32 pixelformat;
+    quint8 *yuyv_buff;
 };
 
 #endif // OPERATECAMERA_H

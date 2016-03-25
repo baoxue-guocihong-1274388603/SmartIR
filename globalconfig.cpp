@@ -1,32 +1,57 @@
 #include "globalconfig.h"
 
-QString GlobalConfig::ServerIP = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/ServerIP");
-QString GlobalConfig::MainIP = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/MainIP");
-QString GlobalConfig::SubIP = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/SubIP");
-QString GlobalConfig::MainDefenceID = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/MainDefenceID");
-QString GlobalConfig::SubDefenceID = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/SubDefenceID");
+QString GlobalConfig::ServerIP = QString("192.168.1.239");
+int     GlobalConfig::ServerPort = 6901;
+QString GlobalConfig::MainIP = QString("");
+QString GlobalConfig::SubIP = QString("");
+QString GlobalConfig::MainDefenceID = QString("000");
+QString GlobalConfig::SubDefenceID = QString("000");
+int     GlobalConfig::CameraSleepTime = 300;
+QString GlobalConfig::DeviceMacAddr = QString("00:01:02:03:04:05");
+QString GlobalConfig::DeviceIPAddrPrefix = QString("192.168.1.");
 
+int GlobalConfig::MainStreamFactor = 0;
+QRect GlobalConfig::MainStreamSelectRect = QRect();
+QList<QPoint> GlobalConfig::MainStreamLightPoint = QList<QPoint>();
+
+int GlobalConfig::SubStreamFactor = 0;
+QRect GlobalConfig::SubStreamSelectRect = QRect();
+QList<QPoint> GlobalConfig::SubStreamLightPoint = QList<QPoint>();
+
+int GlobalConfig::AlarmHostServerPort = 6902;
+int GlobalConfig::MainControlServerPort = 6903;
+int GlobalConfig::UpgradePort = 6904;
+
+QString GlobalConfig::GroupAddr = "224.0.0.17";
+int GlobalConfig::GroupPort = 6905;
 
 QString GlobalConfig::LocalHostIP = CommonSetting::GetLocalHostIP();
 QString GlobalConfig::Mask = CommonSetting::GetMask();
 QString GlobalConfig::Gateway = CommonSetting::GetGateway();
 QString GlobalConfig::MAC = CommonSetting::ReadMacAddress();
 
-int GlobalConfig::AlarmHostAlarmPort = 6901;
-int GlobalConfig::AlarmHostServerPort = 6902;
-int GlobalConfig::MainControlServerPort = 6903;
+void GlobalConfig::init()
+{
+    bool retval = CommonSetting::FileExists("/bin/config.ini");
+    if (retval) {
+        //配置文件存在
+        GlobalConfig::ServerIP = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/ServerIP");
+        GlobalConfig::ServerPort = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/ServerPort").toInt();
+        GlobalConfig::MainIP = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/MainIP");
+        GlobalConfig::SubIP = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/SubIP");
+        GlobalConfig::MainDefenceID = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/MainDefenceID");
+        GlobalConfig::SubDefenceID = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/SubDefenceID");
+        GlobalConfig::CameraSleepTime = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/CameraSleepTime").toInt();
 
-QString GlobalConfig::GroupAddr = "224.0.0.17";
-int GlobalConfig::GroupPort = 6905;
+        GlobalConfig::MainStreamFactor = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/MainStreamBasicPoint").split("#").at(0).toInt();
+        GlobalConfig::MainStreamSelectRect = GlobalConfig::GetMainStreamSelectRect();
+        GlobalConfig::MainStreamLightPoint = GlobalConfig::GetMainStreamLightPoint();
 
-
-int GlobalConfig::MainStreamFactor = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/MainStreamBasicPoint").split("#").at(0).toInt();
-QRect GlobalConfig::MainStreamSelectRect = GlobalConfig::GetMainStreamSelectRect();
-QList<QPoint> GlobalConfig::MainStreamLightPoint = GlobalConfig::GetMainStreamLightPoint();
-
-int GlobalConfig::SubStreamFactor = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/SubStreamBasicPoint").split("#").at(0).toInt();
-QRect GlobalConfig::SubStreamSelectRect = GlobalConfig::GetSubStreamSelectRect();
-QList<QPoint> GlobalConfig::SubStreamLightPoint = GlobalConfig::GetSubStreamLightPoint();
+        GlobalConfig::SubStreamFactor = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/SubStreamBasicPoint").split("#").at(0).toInt();
+        GlobalConfig::SubStreamSelectRect = GlobalConfig::GetSubStreamSelectRect();
+        GlobalConfig::SubStreamLightPoint = GlobalConfig::GetSubStreamLightPoint();
+    }
+}
 
 QRect GlobalConfig::GetMainStreamSelectRect()
 {
@@ -97,4 +122,3 @@ QList<QPoint> GlobalConfig::GetSubStreamLightPoint()
 
     return list_point;
 }
-

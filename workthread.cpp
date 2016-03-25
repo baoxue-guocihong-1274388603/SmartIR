@@ -1,37 +1,48 @@
 #include "workthread.h"
+#include "globalconfig.h"
+#include "devicecontrol.h"
+#include "opencv2/opencv.hpp"
+
+//必须加以下内容,否则编译不能通过,为了兼容C和C99标准
+#ifndef INT64_C
+#define INT64_C
+#define UINT64_C
+#endif
+
+//引入ffmpeg头文件
+extern "C"
+{
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavformat/avio.h>
+#include <libswscale/swscale.h>
+#include <libavutil/frame.h>
+#include <libavutil/opt.h>
+}
 
 using namespace cv;
 
-WorkThread::WorkThread(QString VideoName, int input, int width, int height, int BPP, enum ThreadType tt , QObject *parent) :
+WorkThread::WorkThread(QString VideoName, quint32 width, quint32 height, quint32 BPP, quint32 pixelformat, QObject *parent) :
     QThread(parent)
 {
     this->VideoName = VideoName;
     this->width = width;
     this->height = height;
-    this->BPP = BPP;
+
     this->isStopCapture = false;
     this->isReInitialize = false;
     this->isVaild = false;
     this->isAlarm = false;
-    this->img_buffers = NULL;
-    this->type = tt;
 
     rgb_buff = (uchar*)malloc(width * height * 24 / 8);
 
-    operatecamera = new OperateCamera(input,width,height,BPP,this);
-    camera_fd = operatecamera->OpenCamera(VideoName);
-    if(camera_fd > 0){
-        if(operatecamera->InitCameraDevice(camera_fd,&img_buffers,width,height,V4L2_PIX_FMT_YUYV) > 0){
+    operatecamera = new OperateCamera(VideoName,width,height,BPP,pixelformat,this);
+    if(operatecamera->OpenCamera()){
+        if(operatecamera->InitCameraDevice()){
             qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << VideoName << "success in VIDIOC_STREAMON";
             this->isVaild = true;
         }
     }
-}
-
-void WorkThread::CleanupCaptureDevice()
-{
-    operatecamera->CleanupCaptureDevice(camera_fd,&img_buffers);
-    free(rgb_buff);
 }
 
 void WorkThread::run()
@@ -51,7 +62,7 @@ void WorkThread::run()
             int diff = timer.elapsed();
             qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << VideoName <<  diff << "ms";
 
-            msleep(200);
+            msleep(GlobalConfig::CameraSleepTime);
 			
             ThreadState = QDateTime::currentDateTime().toMSecsSinceEpoch();
         }
@@ -63,11 +74,9 @@ void WorkThread::run()
 QImage WorkThread::ReadFrame()
 {
     if(isReInitialize){
-        operatecamera->CleanupCaptureDevice(camera_fd,&img_buffers);
-        msleep(1500);
-        camera_fd = operatecamera->OpenCamera(VideoName);
-        if(camera_fd > 0){
-            if(operatecamera->InitCameraDevice(camera_fd,&img_buffers,width,height,V4L2_PIX_FMT_YUYV) > 0){
+        operatecamera->CleanupCaptureDevice();
+        if(operatecamera->OpenCamera()){
+            if(operatecamera->InitCameraDevice()){
                 this->isVaild = true;
                 this->isReInitialize = false;
                 qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << VideoName << "success in VIDIOC_STREAMON";
@@ -86,33 +95,18 @@ QImage WorkThread::ReadFrame()
         return QImage();
     }
 
-    int	v4l2BufIndex = operatecamera->ReadFrame(camera_fd,img_buffers);
-    if(v4l2BufIndex < 0){
+    if(operatecamera->ReadFrame()){
+        if(YUYVToRGB24_FFmpeg(operatecamera->yuyv_buff, rgb_buff)){
+            QImage image_rgb888((quint8 *)rgb_buff, this->width, this->height, QImage::Format_RGB888);
+            NormalImage = image_rgb888;
+            return image_rgb888;
+        }
+    }else{        
         qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << VideoName << "Usb Camera Error happen in ReadFrame";
         this->isStopCapture = true;
         emit signalUSBCameraOffline();
         return QImage();
-    }else{
-        //辅助控制杆线程采用ffmpeg转换
-        if(type == WorkThread::SubStream){
-            if(YUYVToRGB24_FFmpeg(operatecamera->yuyv_buff, rgb_buff)){
-                QImage image_rgb888((uchar *)rgb_buff, this->width, this->height, QImage::Format_RGB888);
-                emit signalCaptureNormalFrame(image_rgb888);
-                return image_rgb888;
-            }
-        }
-
-        //主控制杆线程采用jpeg编码
-        if(type == WorkThread::MainStream){
-            if(YUYVToRGB24_FFmpeg(operatecamera->yuyv_buff, rgb_buff)){
-                QImage image_rgb888((uchar *)rgb_buff, this->width, this->height, QImage::Format_RGB888);
-                emit signalCaptureNormalFrame(image_rgb888);
-                return image_rgb888;
-            }
-        }
     }
-
-    return QImage();
 }
 
 void WorkThread::ProcessFrame(QImage &image)
@@ -172,7 +166,8 @@ void WorkThread::ProcessFrame(QImage &image)
                 isAlarm = true;
                 //报警操作
                 cvConvertImage(pSrcImage,pSrcImage,CV_CVTIMG_SWAP_RB);
-                emit signalCaputreAlarmFrame(image);
+                AlarmImage = image;
+                emit signalAlarmImage();
 //                DeviceControl::Instance()->BuzzerEnable();
             }
         }else{

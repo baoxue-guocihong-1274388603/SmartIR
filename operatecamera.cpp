@@ -1,44 +1,47 @@
 #include "operatecamera.h"
 
-OperateCamera::OperateCamera(int input,int width,int height,int BPP,QObject *parent) :
+OperateCamera::OperateCamera(QString VideoName, quint32 width, quint32 height, quint32 BPP, quint32 pixelformat, QObject *parent) :
     QObject(parent)
 {
-    yuyv_buff = (uchar*)malloc(width * height * BPP / 8);
-    this->input = input;
+    this->VideoName = VideoName;
+    this->width = width;
+    this->height = height;
+    this->pixelformat = pixelformat;
+    yuyv_buff = (quint8 *)malloc(width * height * BPP / 8);
 }
 
-int OperateCamera::OpenCamera(QString VideoName)
+bool OperateCamera::OpenCamera()
 {
-    int fd = open(VideoName.toAscii().data(), O_RDWR  | O_NONBLOCK, 0);
-    if(fd == -1){
+    fd = open(VideoName.toAscii().data(), O_RDWR  | O_NONBLOCK, 0);
+    if(fd < 0){
         fprintf(stderr, "Cannot open '%s',errno = %d,error info = %s\n",VideoName.toAscii().data(), errno, strerror(errno));
+        return false;
     }
 
-    return fd;
+    return true;
 }
 
 
-int OperateCamera::InitCameraDevice(int fd,ImgBuffer **imgBufsPtr,int width,int height,
-                     __u32 pixelformat)
+bool OperateCamera::InitCameraDevice()
 {
     //查询设备属性
     struct v4l2_capability cap;
     if(ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0){
         qDebug() << "Error in VIDIOC_QUERYCAP";
         close(fd);
-        return -1;
+        return false;
     }
 
     if(!(cap.capabilities & V4L2_CAP_VIDEO_CAPTURE)){
         qDebug() << "it is not a video capture device";
         close(fd);
-        return -1;
+        return false;
     }
 
     if(!(cap.capabilities & V4L2_CAP_STREAMING)){
         qDebug() << "It can not streaming";
         close(fd);
-        return -1;
+        return false;
     }
 
     qDebug() << "it is a video capture device";
@@ -53,11 +56,11 @@ int OperateCamera::InitCameraDevice(int fd,ImgBuffer **imgBufsPtr,int width,int 
     }
 
     //设置视频输入源
-    int input = this->input;
+    int input = 0;
     if(ioctl(fd, VIDIOC_S_INPUT, &input) < 0){
         qDebug() << "Error in VIDIOC_S_INPUT";
         close(fd);
-        return -1;
+        return false;
     }
 
     //查询并显示所有支持的格式
@@ -90,14 +93,14 @@ int OperateCamera::InitCameraDevice(int fd,ImgBuffer **imgBufsPtr,int width,int 
                (pixelformat >> 16) & 0xFF,
                (pixelformat >> 24) & 0xFF);
         close(fd);
-        return -1;
+        return false;
     }
 
     //查看图片格式和分辨率,判断是否设置成功
     if(ioctl(fd, VIDIOC_G_FMT, &fmt) < 0){
-        printf("Error in VIDIOC_G_FMT\n");
+        qDebug() << "Error in VIDIOC_G_FMT";
         close(fd);
-        return -1;
+        return false;
     }
     qDebug() << "width = " << fmt.fmt.pix.width;
     qDebug() << "height = " << fmt.fmt.pix.height;
@@ -117,13 +120,13 @@ int OperateCamera::InitCameraDevice(int fd,ImgBuffer **imgBufsPtr,int width,int 
     if(ioctl(fd, VIDIOC_S_PARM, &parm) < 0){
         qDebug() << "Error in VIDIOC_S_PARM";
         close(fd);
-        return -1;
+        return false;
     }
 
     if(ioctl(fd, VIDIOC_G_PARM, &parm) < 0){
         qDebug() << "Error in VIDIOC_G_PARM";
         close(fd);
-        return -1;
+        return false;
     }
     qDebug() << "streamparm:\n\tnumerator =" << parm.parm.capture.timeperframe.numerator << "denominator =" << parm.parm.capture.timeperframe.denominator << "capturemode =" <<           parm.parm.capture.capturemode;
 
@@ -136,14 +139,14 @@ int OperateCamera::InitCameraDevice(int fd,ImgBuffer **imgBufsPtr,int width,int 
     if(ioctl(fd, VIDIOC_REQBUFS, &reqbuf) < 0){
         qDebug() << "Error in VIDIOC_REQBUFS";
         close(fd);
-        return -1;
+        return false;
     }
 
-    ImgBuffer *imgBuffers = (ImgBuffer *)calloc(BUFFER_NUMBER,sizeof(ImgBuffer));
-    if(imgBuffers == NULL){
+    img_buffers = (ImgBuffer *)calloc(BUFFER_NUMBER,sizeof(ImgBuffer));
+    if(img_buffers == NULL){
         qDebug() << "Error in calloc";
         close(fd);
-        return -1;
+        return false;
     }
 
     struct v4l2_buffer buffer;
@@ -155,31 +158,31 @@ int OperateCamera::InitCameraDevice(int fd,ImgBuffer **imgBufsPtr,int width,int 
         if(ioctl(fd, VIDIOC_QUERYBUF, &buffer) < 0){
 
             qDebug() << "Error in VIDIOC_QUERYBUF";
-            free(imgBuffers);
+            free(img_buffers);
             close(fd);
-            return -1;
+            return false;
         }
         qDebug() << "buffer.length =" << buffer.length;
         qDebug() << "buffer.bytesused =" << buffer.bytesused;
-        imgBuffers[numBufs].length = buffer.length;
-        imgBuffers[numBufs].start = (__u8 *)mmap (NULL,buffer.length,
+        img_buffers[numBufs].length = buffer.length;
+        img_buffers[numBufs].start = (quint8 *)mmap (NULL,buffer.length,
 PROT_READ | PROT_WRITE,MAP_SHARED,fd,buffer.m.offset);
-        if(MAP_FAILED == imgBuffers[numBufs].start){
+        if(MAP_FAILED == img_buffers[numBufs].start){
             qDebug() << "Error in mmap";
-            free(imgBuffers);
+            free(img_buffers);
             close(fd);
-            return -1;
+            return false;
         }
 
         //把缓冲帧放入队列
         if(ioctl(fd, VIDIOC_QBUF, &buffer) < 0){
             qDebug() << "Error in VIDIOC_QBUF";
             for(int i = 0; i <= numBufs; i++){
-                munmap(imgBuffers[i].start, imgBuffers[i].length);
+                munmap(img_buffers[i].start, img_buffers[i].length);
             }
-            free(imgBuffers);
+            free(img_buffers);
             close(fd);
-            return -1;
+            return false;
         }
     }
 
@@ -187,37 +190,35 @@ PROT_READ | PROT_WRITE,MAP_SHARED,fd,buffer.m.offset);
     if(ioctl(fd, VIDIOC_STREAMON, &type) < 0){
         qDebug() << "Error in VIDIOC_STREAMON";
         for(int i = 0; i < BUFFER_NUMBER; i++){
-            munmap(imgBuffers[i].start, imgBuffers[i].length);
+            munmap(img_buffers[i].start, img_buffers[i].length);
         }
-        free(imgBuffers);
+        free(img_buffers);
         close(fd);
-        return -1;
+        return false;
     }
 
-    *imgBufsPtr = imgBuffers;
-
-    return fd;
+    return true;
 }
 
-void OperateCamera::CleanupCaptureDevice(int fd, ImgBuffer **imgBuffers)
+void OperateCamera::CleanupCaptureDevice()
 {
-    if(*imgBuffers != NULL){
+    if(img_buffers != NULL){
         enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         if(ioctl(fd, VIDIOC_STREAMOFF, &type) < 0){
             qDebug() << "Error in VIDIOC_STREAMOFF";
         }
 
         for(int i = 0; i < BUFFER_NUMBER; i++){
-            munmap((*imgBuffers)[i].start, (*imgBuffers)[i].length);
+            munmap(img_buffers[i].start, img_buffers[i].length);
         }
         close(fd);
-        free(*imgBuffers);
-        *imgBuffers = NULL;
+        free(img_buffers);
+        img_buffers = NULL;
         qDebug() << "CleanupCaptureDevice";
     }
 }
 
-int OperateCamera::ReadFrame(int fd,ImgBuffer *imgBuffers)
+bool OperateCamera::ReadFrame()
 {
     //等待摄像头采集到一桢数据
     for(;;){
@@ -232,10 +233,10 @@ int OperateCamera::ReadFrame(int fd,ImgBuffer *imgBuffers)
             if(EINTR == errno)
                 continue;
             qDebug() << "select error";
-            return -1;
+            return false;
         }else if(0 == r) {
             qDebug() << "select timeout";
-            return -1;
+            return false;
         }else{//采集到一张图片
             qDebug() << "capture frame";
             break;
@@ -248,16 +249,16 @@ int OperateCamera::ReadFrame(int fd,ImgBuffer *imgBuffers)
     buffer.memory = V4L2_MEMORY_MMAP;
     if(ioctl(fd, VIDIOC_DQBUF, &buffer) < 0){
         qDebug() << "Error in VIDIOC_DQBUF";
-        return -1;
+        return false;
     }
 
-    memcpy(yuyv_buff,(uchar *)imgBuffers[buffer.index].start,imgBuffers[buffer.index].length);
+    memcpy(yuyv_buff,(quint8 *)img_buffers[buffer.index].start,img_buffers[buffer.index].length);
 
     //将取出的缓冲帧放回缓冲区
     if(ioctl(fd, VIDIOC_QBUF, &buffer) < 0){
         qDebug() << "Error in VIDIOC_QBUF";
-        return -1;
+        return false;
     }
 
-    return buffer.index;
+    return true;
 }

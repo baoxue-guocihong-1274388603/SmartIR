@@ -19,8 +19,6 @@ public:
     explicit TcpServer(QString MainVideoName,QString SubVideoName,QObject *parent = 0);
     void enableKeepAlive(int fd,int max_idle,int keep_count,int keep_interval);
 
-signals:
-
 public slots:
     void slotProcessAlarmHostConfigConnection();
     void slotRecvAlarmHostConfigMsg();
@@ -30,10 +28,8 @@ public slots:
     void slotRecvMainControlMsg();
     void slotMainControlDisconnect();
 
-    void slotMainCaputreNormalFrame(QImage &img);
-
-    void slotMainCaputreAlarmFrame(QImage &img);
-    void slotSubCaputreAlarmFrame(QImage &img);
+    void slotMainAlarmImage();
+    void slotSubAlarmImage();
     void slotOtherAlarmMsg(quint8 id);
 
     void slotAlarmHostAlarmConnected();
@@ -48,7 +44,8 @@ public slots:
     void slotProcessAlarmHostConfigMsg();
     void slotSendAlarmMsg();
 
-    void slotUSBCameraOffline();
+    void slotMainUSBCameraOffline();
+    void slotSubUSBCameraOffline();
 
     void slotSetSystemTime();
 
@@ -71,16 +68,12 @@ private:
     WorkThread *MainWorkThread;//主控制杆采集线程
     WorkThread *SubWorkThread;//辅助控制杆采集线程
 
-    QImage MainNormalImage;//主控制杆正常图片
-    QImage SubNormalImage;//辅助控制杆正常图片
-
     enum ConnectState{
         ConnectedState,
         DisConnectedState
     };
     volatile enum ConnectState AlarmHostAlarmConnectStateFlag;//主控制杆主动上传报警主机tcp连接状态
     volatile enum ConnectState SubControlConnectStateFlag;//主控制杆与辅助控制杆通信tcp连接状态
-
 
     QTimer *ProcessAlarmHostConfigMsgTimer;//用来处理报警主机发送的配置信息
 
