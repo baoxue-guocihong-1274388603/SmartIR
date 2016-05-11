@@ -1,6 +1,8 @@
 #include "udpgroupclient.h"
 #include "globalconfig.h"
 
+#define TIMEMS QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
+
 UdpGroupClient::UdpGroupClient(QObject *parent) :
     QObject(parent)
 {
@@ -18,7 +20,7 @@ void UdpGroupClient::slotProcessPendingDatagrams()
         datagram.resize(udp_socket.pendingDatagramSize());
         udp_socket.readDatagram(datagram.data(), datagram.size());
 
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "slotProcessPendingDatagrams" << datagram;
+        qDebug() << TIMEMS << "slotProcessPendingDatagrams" << datagram;
 
         datagram = datagram.mid(20);
 
@@ -28,7 +30,7 @@ void UdpGroupClient::slotProcessPendingDatagrams()
         bool isSearchDevice = false;
 
         if(!dom.setContent(datagram, &errorMsg, &errorLine, &errorColumn)) {
-            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "Parse error at line " << errorLine <<","<< "column " << errorColumn << ","<< errorMsg;
+            qDebug() << TIMEMS << "Parse error at line " << errorLine <<","<< "column " << errorColumn << ","<< errorMsg;
             continue;
         }
 

@@ -13,13 +13,15 @@ public:
     QImage ReadFrame();
     void ProcessFrame(QImage &image);
     bool YUYVToRGB24_FFmpeg(uchar *pYUV,uchar *pRGB24);
+    void Clear();
 
 protected:
     void run();
 
 signals:
     void signalAlarmImage();
-    void signalUSBCameraOffline();
+    void signalUSBCameraOffline();//摄像头掉线
+    void signalUSBCameraOnline();//摄像头恢复正常
 
 public:
     OperateCamera *operatecamera;
@@ -36,10 +38,7 @@ public:
     QRect SelectRect;
     QList<QPoint> LightPoint;
 
-    uchar *yuyv_buff;
     uchar *rgb_buff;
-
-    qint64 ThreadState;
 
     QImage NormalImage;
     QImage AlarmImage;

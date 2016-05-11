@@ -17,7 +17,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QUdpSocket>
-#include <QCoreApplication>
+#include <QApplication>
 #include <QEventLoop>
 #include <QTimer>
 #include <QRect>
@@ -292,10 +292,8 @@ public:
                 QNetworkInterface::allInterfaces();
         foreach(const QNetworkInterface &interface,list){
             if(interface.name() == "eth0"){
-                QString MacAddress =
-                        interface.hardwareAddress();
-                QStringList temp = MacAddress.split(":");
-                return temp.join("");
+                QString MacAddress = interface.hardwareAddress();
+                return MacAddress;
             }
         }
     }

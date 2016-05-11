@@ -3,31 +3,22 @@
 
 DeviceControl *DeviceControl::_instance = 0;
 
+#define Main_Camera_Power_Disable  0
+#define Main_Camera_Power_Enable   1
+#define Sub_Camera_Power_Disable   2
+#define Sub_Camera_Power_Enable    3
+
 DeviceControl::DeviceControl(QObject *parent) :
     QObject(parent)
 {
     camera_fd = open("/dev/s5pv210_camera",O_RDWR);
     if(camera_fd == -1){
         printf("%s:%s open /dev/s5pv210_camera failed\n",__FILE__,__FUNCTION__);
-        return;
     }
 
     usb_hub_fd = open("/dev/s5pv210_usb_hub",O_RDWR);
     if(usb_hub_fd == -1){
         printf("%s:%s open /dev/s5pv210_usb_hub failed\n",__FILE__,__FUNCTION__);
-        return;
-    }
-
-    alarm_fd = open("/dev/s5pv210_alarm",O_RDWR);
-    if(alarm_fd == -1){
-        printf("%s:%s open /dev/s5pv210_alarm failed\n",__FILE__,__FUNCTION__);
-        return;
-    }
-
-    buzzer_fd = open("/dev/s5pv210_buzzer",O_RDWR);
-    if(alarm_fd == -1){
-        printf("%s:%s open /dev/s5pv210_buzzer failed\n",__FILE__,__FUNCTION__);
-        return;
     }
 
     ip_fd = open("/dev/s5pv210_ip",O_RDONLY);
@@ -49,14 +40,24 @@ DeviceControl::DeviceControl(QObject *parent) :
     FeedWatchDogTimer->start();
 }
 
+void DeviceControl::MainCameraPowerEnable()
+{
+    ioctl(camera_fd,Main_Camera_Power_Enable);
+}
+
+void DeviceControl::MainCameraPowerDisable()
+{
+    ioctl(camera_fd,Main_Camera_Power_Disable);
+}
+
 void DeviceControl::SubCameraPowerEnable()
 {
-    ioctl(camera_fd,1);
+    ioctl(camera_fd,Sub_Camera_Power_Enable);
 }
 
 void DeviceControl::SubCameraPowerDisable()
 {
-    ioctl(camera_fd,0);
+    ioctl(camera_fd,Sub_Camera_Power_Disable);
 }
 
 uchar DeviceControl::GetSwitchAddr()//获取拨码地址
@@ -72,26 +73,6 @@ uchar DeviceControl::GetSwitchAddr()//获取拨码地址
 void DeviceControl::UsbHubReset()
 {
     ioctl(usb_hub_fd,0);
-}
-
-void DeviceControl::AlarmEnable()
-{
-    ioctl(alarm_fd,1);
-}
-
-void DeviceControl::AlarmDisable()
-{
-    ioctl(alarm_fd,0);
-}
-
-void DeviceControl::BuzzerEnable()
-{
-    ioctl(buzzer_fd,1);
-}
-
-void DeviceControl::BuzzerDisable()
-{
-    ioctl(buzzer_fd,0);
 }
 
 void DeviceControl::slotFeedWatchDog()

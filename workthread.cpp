@@ -22,6 +22,8 @@ extern "C"
 
 using namespace cv;
 
+#define TIMEMS QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
+
 WorkThread::WorkThread(QString VideoName, quint32 width, quint32 height, quint32 BPP, quint32 pixelformat, QObject *parent) :
     QThread(parent)
 {
@@ -39,7 +41,7 @@ WorkThread::WorkThread(QString VideoName, quint32 width, quint32 height, quint32
     operatecamera = new OperateCamera(VideoName,width,height,BPP,pixelformat,this);
     if(operatecamera->OpenCamera()){
         if(operatecamera->InitCameraDevice()){
-            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << VideoName << "success in VIDIOC_STREAMON";
+            qDebug() << TIMEMS << VideoName << "success in VIDIOC_STREAMON";
             this->isVaild = true;
         }
     }
@@ -50,7 +52,6 @@ void WorkThread::run()
     QElapsedTimer timer;
 
     while(1){
-        ThreadState = QDateTime::currentDateTime().toMSecsSinceEpoch();
         while(!isStopCapture){
             timer.start();
 
@@ -60,11 +61,9 @@ void WorkThread::run()
             }
 
             int diff = timer.elapsed();
-            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << VideoName <<  diff << "ms";
+            qDebug() << TIMEMS << VideoName <<  diff << "ms";
 
             msleep(GlobalConfig::CameraSleepTime);
-			
-            ThreadState = QDateTime::currentDateTime().toMSecsSinceEpoch();
         }
         msleep(100);
     }
@@ -79,10 +78,11 @@ QImage WorkThread::ReadFrame()
             if(operatecamera->InitCameraDevice()){
                 this->isVaild = true;
                 this->isReInitialize = false;
-                qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << VideoName << "success in VIDIOC_STREAMON";
+                emit signalUSBCameraOnline();
+                qDebug() << TIMEMS << VideoName << "success in VIDIOC_STREAMON";
             }else{
                 this->isVaild = false;
-                qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << VideoName << "failed in VIDIOC_STREAMON";
+                qDebug() << TIMEMS << VideoName << "failed in VIDIOC_STREAMON";
             }
         }else{
             this->isVaild = false;
@@ -102,7 +102,7 @@ QImage WorkThread::ReadFrame()
             return image_rgb888;
         }
     }else{        
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << VideoName << "Usb Camera Error happen in ReadFrame";
+        qDebug() << TIMEMS << VideoName << "Usb Camera Error happen in ReadFrame";
         this->isStopCapture = true;
         emit signalUSBCameraOffline();
         return QImage();
@@ -112,7 +112,7 @@ QImage WorkThread::ReadFrame()
 void WorkThread::ProcessFrame(QImage &image)
 {
     if(!this->SelectRect.isEmpty() && !this->LightPoint.isEmpty()){
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << VideoName << "ProcessFrame";
+        qDebug() << TIMEMS << VideoName << "ProcessFrame";
         IplImage *pSrcImage = cvCreateImageHeader(cvSize(image.width(),image.height()),
                                                   IPL_DEPTH_8U,3);
         pSrcImage->imageData = (char*)image.bits();
@@ -168,11 +168,15 @@ void WorkThread::ProcessFrame(QImage &image)
                 cvConvertImage(pSrcImage,pSrcImage,CV_CVTIMG_SWAP_RB);
                 AlarmImage = image;
                 emit signalAlarmImage();
-//                DeviceControl::Instance()->BuzzerEnable();
             }
         }else{
             isAlarm = false;
         }
+
+        //报警操作
+//        cvConvertImage(pSrcImage,pSrcImage,CV_CVTIMG_SWAP_RB);
+//        AlarmImage = image;
+//        emit signalAlarmImage();
 
         cvReleaseImage(&pSrcImage);
         cvReleaseImage(&pImageRoi);
@@ -213,4 +217,11 @@ bool WorkThread::YUYVToRGB24_FFmpeg(uchar *pYUV,uchar *pRGB24)
         imgCtx = NULL;
         return false;
     }
+}
+
+void WorkThread::Clear()
+{
+    operatecamera->CleanupCaptureDevice();
+    free(operatecamera->yuyv_buff);
+    free(this->rgb_buff);
 }

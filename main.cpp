@@ -13,7 +13,7 @@ int main(int argc, char *argv[])
     GlobalConfig::init();
 
     //根据拨码开关设置ip地址
-    IPConfig ipconfig;
+    IPConfig::Instance()->Update();
 
     //获取2个摄像头设备文件
     GetCameraInfo::Instance();

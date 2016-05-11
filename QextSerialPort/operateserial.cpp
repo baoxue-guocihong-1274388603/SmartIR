@@ -19,7 +19,7 @@ OperateSerial::OperateSerial(QObject *parent) :
     ReadSerialTimer = new QTimer(this);
     ReadSerialTimer->setInterval(5000);
     connect(ReadSerialTimer,SIGNAL(timeout()),this,SLOT(slotReadSerialMsg()));
-    ReadSerialTimer->start();
+//    ReadSerialTimer->start();
 }
 
 //id用来区分主控制杆和辅助控制杆0x00主控制杆   0x01辅助控制杆

@@ -18,14 +18,12 @@ class DeviceControl : public QObject
     Q_OBJECT
 public:
     explicit DeviceControl(QObject *parent = 0);
+    void MainCameraPowerEnable();//打开主控制杆摄像头电源
+    void MainCameraPowerDisable();
     void SubCameraPowerEnable();//打开辅助控制杆摄像头电源
     void SubCameraPowerDisable();//关闭辅助控制杆摄像头电源
     uchar GetSwitchAddr();//获取拨码地址
     void UsbHubReset();//usb hub复位
-    void AlarmEnable();//警号使能
-    void AlarmDisable();//警号禁止
-    void BuzzerEnable();//蜂鸣器使能
-    void BuzzerDisable();
 
     static DeviceControl *Instance() {
         static QMutex mutex;
@@ -44,8 +42,6 @@ public slots:
 public:
     int camera_fd;
     int usb_hub_fd;
-    int alarm_fd;
-    int buzzer_fd;
     int ip_fd;
     int wdt_fd;
 

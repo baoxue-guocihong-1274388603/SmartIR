@@ -7,7 +7,7 @@ class GlobalConfig
 {
 public:
     static QString ServerIP;                  //告警上报服务器IP
-    static int ServerPort;                    //告警上报服务器端口
+    static QString ServerPort;                //告警上报服务器端口
     static QString MainIP;                    //主控制杆IP，主要用于辅助控制杆报警时填充本IP
     static QString SubIP;               //辅助控制杆IP，用于向辅助控制杆发送配置信息和获取辅助控制杆采集的图片
     static QString MainDefenceID;             //主控制杆报警时填充本防区号
@@ -15,6 +15,7 @@ public:
     static int CameraSleepTime;               //采集间隔（单位毫秒）
     static QString DeviceMacAddr;             //设备MAC地址
     static QString DeviceIPAddrPrefix;        //设备网段
+    static int TcpConnectTimeout;             //tcp连接超时
 
     static int MainStreamFactor;              //主控制杆放大倍数
     static QRect MainStreamSelectRect;        //主控制杆框选的矩形区域
@@ -36,6 +37,10 @@ public:
     static QString Gateway;
     static QString MAC;
 
+    static QString AppPath;
+    static QString AppName;
+    static QString ConfigFileName;
+
     static void init();
 
     static QRect GetMainStreamSelectRect();
@@ -43,6 +48,8 @@ public:
 
     static QList<QPoint> GetMainStreamLightPoint();
     static QList<QPoint> GetSubStreamLightPoint();   
+
+    static QString GenerateMAC();             //随机生成MAC地址
 };
 
 #endif // GLOBALCONFIG_H

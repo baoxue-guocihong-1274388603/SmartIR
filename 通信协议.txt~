@@ -62,13 +62,38 @@
 	<!-- 设备MAC地址（同一局域网内设备不能有重复的MAC地址） -->
 	<DeviceMacAddr></DeviceMacAddr>	
 	<!-- 设备网段 默认192.168.8 -->
-	<DeviceIPAddr></DeviceIPAddr>
+	<DeviceIPAddrPrefix></DeviceIPAddrPrefix>
 </Server>
 
 前端返回：
 <?xml version="1.0" encoding="UTF-8"?>
 <Device DeviceIP="设备IP" DefenceID="前端防区号">
 	OK
+</Device>
+
+1.1、报警主机获取网络配置信息
+<?xml version="1.0" encoding="UTF-8"?>
+<Server TargetIP="前端设备IP" NowTime="2016-03-22 18:18:18">
+	<GetDeviceConfig />
+</Server>
+
+前端返回：
+<?xml version="1.0" encoding="UTF-8"?>
+<Device DeviceIP="设备IP" DefenceID="前端防区号">
+	<!-- 告警上报服务器IP -->
+	<ServerIP></ServerIP>	
+	<!-- 告警上报服务器端口 默认6901-->
+	<ServerPort></ServerPort>	
+	<!-- 辅助控制杆IP -->
+	<SubIP></SubIP>	
+	<!-- 防区号 -->
+	<DefenceID></DefenceID>
+	<!-- 辅摄像头采集间隔（单位毫秒） 默认300毫秒 -->
+	<CameraSleepTime></CameraSleepTime>
+	<!-- 设备MAC地址（同一局域网内设备不能有重复的MAC地址） -->
+	<DeviceMacAddr></DeviceMacAddr>	
+	<!-- 设备网段 默认192.168.8 -->
+	<DeviceIPAddrPrefix></DeviceIPAddrPrefix>
 </Device>
 
 2、报警主机获取前端基准图片

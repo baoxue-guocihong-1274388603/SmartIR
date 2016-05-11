@@ -1,29 +1,25 @@
 #include "tcpserver.h"
 
+#define TIMEMS QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss")
+
 TcpServer::TcpServer(QString MainVideoName, QString SubVideoName, QObject *parent) :
     QObject(parent)
 {
     MainStreamVideoName = MainVideoName;
     SubStreamVideoName = SubVideoName;
 
-    //监听报警主机
+    isMainThreadExceptionQuit = false;
+    isSubThreadExceptionQuit = false;
+
+    //监听报警主机连接
     AlarmHostServer = new QTcpServer(this);
     connect(AlarmHostServer,SIGNAL(newConnection()),this,SLOT(slotProcessAlarmHostConfigConnection()));
     AlarmHostServer->listen(QHostAddress::Any,GlobalConfig::AlarmHostServerPort);
 
-    //监听主控制杆
-    if(!SubVideoName.isEmpty()){//第一个点位没有辅助控制杆
-        MainControlSever = new QTcpServer(this);
-        connect(MainControlSever,SIGNAL(newConnection()),this,SLOT(slotProcessMainControlConnection()));
-        MainControlSever->listen(QHostAddress::Any,GlobalConfig::MainControlServerPort);
-    }
-
-    //用来主动上报报警信息-->使用tcp短连接
-    AlarmHostAlarmSocket = new QTcpSocket(this);
-    connect(AlarmHostAlarmSocket,SIGNAL(connected()),this,SLOT(slotAlarmHostAlarmConnected()));
-    connect(AlarmHostAlarmSocket,SIGNAL(disconnected()),this,SLOT(slotAlarmHostAlarmDisConnected()));
-    connect(AlarmHostAlarmSocket,SIGNAL(error(QAbstractSocket::SocketError)),this,SLOT(slotAlarmHostAlarmDisplayError(QAbstractSocket::SocketError)));
-    AlarmHostAlarmConnectStateFlag = TcpServer::DisConnectedState;
+    //监听主控制杆连接
+    MainControlSever = new QTcpServer(this);
+    connect(MainControlSever,SIGNAL(newConnection()),this,SLOT(slotProcessMainControlConnection()));
+    MainControlSever->listen(QHostAddress::Any,GlobalConfig::MainControlServerPort);
 
     MainControlSocket = NULL;
 
@@ -49,7 +45,7 @@ TcpServer::TcpServer(QString MainVideoName, QString SubVideoName, QObject *paren
         MainWorkThread->LightPoint = GlobalConfig::MainStreamLightPoint;
         connect(MainWorkThread,SIGNAL(signalAlarmImage()),this, SLOT(slotMainAlarmImage()),Qt::BlockingQueuedConnection);
         connect(MainWorkThread,SIGNAL(signalUSBCameraOffline()),this,SLOT(slotMainUSBCameraOffline()),Qt::BlockingQueuedConnection);
-        PreMainThreadState = MainWorkThread->ThreadState;
+        connect(MainWorkThread,SIGNAL(signalUSBCameraOnline()),this,SLOT(slotMainUSBCameraOnline()));
         MainWorkThread->start();
     }
 
@@ -61,19 +57,19 @@ TcpServer::TcpServer(QString MainVideoName, QString SubVideoName, QObject *paren
         SubWorkThread->LightPoint = GlobalConfig::SubStreamLightPoint;
         connect(SubWorkThread,SIGNAL(signalAlarmImage()),this, SLOT(slotSubAlarmImage()),Qt::BlockingQueuedConnection);
         connect(SubWorkThread,SIGNAL(signalUSBCameraOffline()),this,SLOT(slotSubUSBCameraOffline()),Qt::BlockingQueuedConnection);
-        PreSubThreadState = SubWorkThread->ThreadState;
+        connect(SubWorkThread,SIGNAL(signalUSBCameraOnline()),this,SLOT(slotSubUSBCameraOnline()));
         SubWorkThread->start();
     }
 
-    //专门用来处理报警主机的下发的配置信息
+    //专门用来处理报警主机下发的配置信息
     ProcessAlarmHostConfigMsgTimer = new QTimer(this);
-    ProcessAlarmHostConfigMsgTimer->setInterval(50);
+    ProcessAlarmHostConfigMsgTimer->setInterval(300);
     connect(ProcessAlarmHostConfigMsgTimer,SIGNAL(timeout()),this,SLOT(slotProcessAlarmHostConfigMsg()));
     ProcessAlarmHostConfigMsgTimer->start();
 
     //用来发送所有报警信息，包括主控制杆和辅助控制杆以及其他报警信息
     SendAlarmMsgTimer = new QTimer(this);
-    SendAlarmMsgTimer->setInterval(50);
+    SendAlarmMsgTimer->setInterval(500);
     connect(SendAlarmMsgTimer,SIGNAL(timeout()),this,SLOT(slotSendAlarmMsg()));
     SendAlarmMsgTimer->start();
 
@@ -103,34 +99,49 @@ TcpServer::TcpServer(QString MainVideoName, QString SubVideoName, QObject *paren
 
 void TcpServer::slotProcessAlarmHostConfigConnection()
 {
-    AlarmHostConfigSocket = AlarmHostServer->nextPendingConnection();
+    QTcpSocket *AlarmHostConfigSocket = AlarmHostServer->nextPendingConnection();
+
     connect(AlarmHostConfigSocket, SIGNAL(readyRead()), this, SLOT(slotRecvAlarmHostConfigMsg()));
     connect(AlarmHostConfigSocket, SIGNAL(disconnected()), this, SLOT(slotAlarmHostConfigDisconnect()));
-    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "AlarmHost Connect" << "\tIP =" << AlarmHostConfigSocket->peerAddress().toString() << "\tPort =" << AlarmHostConfigSocket->peerPort();
+    qDebug() << TIMEMS << "AlarmHostConfig Connect" << "\tIP =" << AlarmHostConfigSocket->peerAddress().toString() << "\tPort =" << AlarmHostConfigSocket->peerPort();
 
-    //enableKeepAlive(AlarmHostConfigSocket->socketDescriptor(),30,1,1);
+    enableKeepAlive(AlarmHostConfigSocket->socketDescriptor(),1,1,1);
+
+    tcpClientsUnique.append(AlarmHostConfigSocket);
 }
 
 void TcpServer::slotRecvAlarmHostConfigMsg()
 {
-    if(AlarmHostConfigSocket->isOpen() && AlarmHostConfigSocket->isReadable()) {
-        QByteArray data = AlarmHostConfigSocket->readAll();
+    QTcpSocket *AlarmHostConfigSocket = (QTcpSocket *)sender();
+    QByteArray data = AlarmHostConfigSocket->readAll();
 
-        if(data.contains("StopServices")){
-            AlarmHostConfigBuffer.clear();
-        }
-
-        if(data.contains("Reboot")){
-            AlarmHostConfigBuffer.clear();
-        }
-
-        AlarmHostConfigBuffer.append(data);
+    if(data.contains("StopServices")){
+        AlarmHostConfigBuffer.clear();
+        tcpClients.clear();
     }
+
+    if(data.contains("Reboot")){
+        AlarmHostConfigBuffer.clear();
+        tcpClients.clear();
+    }
+
+    AlarmHostConfigBuffer.append(data);
+    tcpClients.append(AlarmHostConfigSocket);
 }
 
 void TcpServer::slotAlarmHostConfigDisconnect()
 {
-    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "AlarmHost Disconnect" << "\tIP =" << AlarmHostConfigSocket->peerAddress().toString() << "\tPort =" << AlarmHostConfigSocket->peerPort();
+    QTcpSocket *AlarmHostConfigSocket = (QTcpSocket *)sender();
+
+    qDebug() << TIMEMS << "AlarmHost Disconnect" << "\tIP =" << AlarmHostConfigSocket->peerAddress().toString() << "\tPort =" << AlarmHostConfigSocket->peerPort();
+
+    int size = tcpClientsUnique.size();
+    for(int i = 0; i < size; i++){
+        if(tcpClientsUnique.at(i) == AlarmHostConfigSocket){
+            tcpClientsUnique.removeAt(i);
+            break;
+        }
+    }
 }
 
 void TcpServer::slotProcessMainControlConnection()
@@ -138,7 +149,7 @@ void TcpServer::slotProcessMainControlConnection()
     MainControlSocket = MainControlSever->nextPendingConnection();
     connect(MainControlSocket, SIGNAL(readyRead()), this, SLOT(slotRecvMainControlMsg()));
     connect(MainControlSocket, SIGNAL(disconnected()), this, SLOT(slotMainControlDisconnect()));
-    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "MainControl Connect" << "\tIP =" << MainControlSocket->peerAddress().toString() << "\tPort =" << MainControlSocket->peerPort();
+    qDebug() << TIMEMS << "MainControl Connect" << "\tIP =" << MainControlSocket->peerAddress().toString() << "\tPort =" << MainControlSocket->peerPort();
 }
 
 void TcpServer::slotRecvMainControlMsg()
@@ -156,7 +167,7 @@ void TcpServer::slotRecvMainControlMsg()
             QByteArray FullPackage;
 
             if(MainControlBuffer.size() <= 97){
-                qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "MainControlBuffer.size() <= 97";
+                qDebug() << TIMEMS << "MainControlBuffer.size() <= 97";
                 MainControlBuffer.clear();
                 return;
             }
@@ -175,7 +186,7 @@ void TcpServer::slotRecvMainControlMsg()
             }
 
             if(!dom.setContent(FullPackage, &errorMsg, &errorLine, &errorColumn)) {
-                qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "Parse error at line " << errorLine <<","<< "column " << errorColumn << ","<< errorMsg;
+                qDebug() << TIMEMS << "Parse error at line " << errorLine <<","<< "column " << errorColumn << ","<< errorMsg;
                 return;
             }
 
@@ -199,11 +210,14 @@ void TcpServer::slotRecvMainControlMsg()
                         QDomElement firstChildElement = firstChildNode.toElement();
                         QString SubStreamBasicPoint = firstChildElement.text();
                         SubStreamBasicPoint = SubStreamBasicPoint.split(",").join(".");
-                        CommonSetting::WriteSettings("/bin/config.ini","AppConfig/SubStreamBasicPoint",SubStreamBasicPoint);
+                        CommonSetting::WriteSettings(GlobalConfig::ConfigFileName,"AppConfig/SubStreamBasicPoint",SubStreamBasicPoint);
 
-                        GlobalConfig::SubStreamFactor = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/SubStreamBasicPoint").split("#").at(0).toInt();
-                        GlobalConfig::SubStreamSelectRect = GlobalConfig::GetSubStreamSelectRect();
-                        GlobalConfig::SubStreamLightPoint = GlobalConfig::GetSubStreamLightPoint();
+                        GlobalConfig::SubStreamFactor =
+                                CommonSetting::ReadSettings(GlobalConfig::ConfigFileName,"AppConfig/SubStreamBasicPoint").split("#").at(0).toInt();
+                        GlobalConfig::SubStreamSelectRect =
+                                GlobalConfig::GetSubStreamSelectRect();
+                        GlobalConfig::SubStreamLightPoint =
+                                GlobalConfig::GetSubStreamLightPoint();
 
                         if(!SubStreamVideoName.isEmpty()){
                             SubWorkThread->factor = GlobalConfig::SubStreamFactor;
@@ -215,22 +229,25 @@ void TcpServer::slotRecvMainControlMsg()
                     if(firstChildNode.nodeName() == "ServerIP"){
                         QDomElement firstChildElement = firstChildNode.toElement();
                         QString ServerIP = firstChildElement.text();
-                        CommonSetting::WriteSettings("/bin/config.ini","AppConfig/ServerIP",ServerIP);
-                        GlobalConfig::ServerIP = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/ServerIP");
+                        CommonSetting::WriteSettings(GlobalConfig::ConfigFileName,"AppConfig/ServerIP",ServerIP);
+                        GlobalConfig::ServerIP =
+                                CommonSetting::ReadSettings(GlobalConfig::ConfigFileName,"AppConfig/ServerIP");
                     }
 
                     if(firstChildNode.nodeName() == "MainIP"){
                         QDomElement firstChildElement = firstChildNode.toElement();
                         QString MainIP = firstChildElement.text();
-                        CommonSetting::WriteSettings("/bin/config.ini","AppConfig/MainIP",MainIP);
-                        GlobalConfig::MainIP = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/MainIP");
+                        CommonSetting::WriteSettings(GlobalConfig::ConfigFileName,"AppConfig/MainIP",MainIP);
+                        GlobalConfig::MainIP =
+                                CommonSetting::ReadSettings(GlobalConfig::ConfigFileName,"AppConfig/MainIP");
                     }
 
                     if(firstChildNode.nodeName() == "SubDefenceID"){
                         QDomElement firstChildElement = firstChildNode.toElement();
                         QString SubDefenceID = firstChildElement.text();
-                        CommonSetting::WriteSettings("/bin/config.ini","AppConfig/SubDefenceID",SubDefenceID);
-                        GlobalConfig::SubDefenceID = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/SubDefenceID");
+                        CommonSetting::WriteSettings(GlobalConfig::ConfigFileName,"AppConfig/SubDefenceID",SubDefenceID);
+                        GlobalConfig::SubDefenceID =
+                                CommonSetting::ReadSettings(GlobalConfig::ConfigFileName,"AppConfig/SubDefenceID");
                     }
 
                     firstChildNode = firstChildNode.nextSibling();//下一个节点
@@ -255,6 +272,12 @@ void TcpServer::slotRecvMainControlMsg()
                     RootElement.setAttribute("DeviceIP",GlobalConfig::MainIP);
                     RootElement.setAttribute("DefenceID",GlobalConfig::SubDefenceID);
                     AckDom.appendChild(RootElement);
+
+                    //创建MainStream元素
+                    QDomElement MainStreamElement = AckDom.createElement("MainStream");
+                    QDomText MainStreamElementText = AckDom.createTextNode("");
+                    MainStreamElement.appendChild(MainStreamElementText);
+                    RootElement.appendChild(MainStreamElement);
 
                     //创建SubStream元素
                     QDomElement SubStreamElement = AckDom.createElement("SubStream");
@@ -283,8 +306,7 @@ void TcpServer::slotRecvMainControlMsg()
                         SubStreamBase64 = QString("本设备没有辅助控制杆，不能获取子码流");
                     }
 
-                    QDomText SubStreamElementText =
-                            AckDom.createTextNode(SubStreamBase64);
+                    QDomText SubStreamElementText = AckDom.createTextNode(SubStreamBase64);
                     SubStreamElement.appendChild(SubStreamElementText);
                     RootElement.appendChild(SubStreamElement);
 
@@ -294,12 +316,10 @@ void TcpServer::slotRecvMainControlMsg()
                     int length = MessageMerge.size();
                     MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
 
-                    if(AlarmHostConfigSocket->isOpen() && AlarmHostConfigSocket->isWritable())
-                    {
-                        AlarmHostConfigSocket->write(MessageMerge.toAscii());
-                        AlarmHostConfigSocket->waitForBytesWritten(300);
-                        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "Return SubStream Pic";
+                    foreach (QTcpSocket *AlarmHostConfigSocket, tcpClientsUnique) {
+                        SendAlarmHostConfigData(MessageMerge,AlarmHostConfigSocket);
                     }
+                    qDebug() << TIMEMS << "Return SubStream Basic Pic";
                 }
             }
         }
@@ -308,13 +328,13 @@ void TcpServer::slotRecvMainControlMsg()
 
 void TcpServer::slotMainControlDisconnect()
 {
-    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "MainControl Disconnect" << "\tIP =" << MainControlSocket->peerAddress().toString() << "\tPort =" << MainControlSocket->peerPort();
+    qDebug() << TIMEMS << "MainControl Disconnect" << "\tIP =" << MainControlSocket->peerAddress().toString() << "\tPort =" << MainControlSocket->peerPort();
     MainControlSocket = NULL;
 }
 
 void TcpServer::slotMainAlarmImage()
 {
-    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "MainStream Alarm";
+    qDebug() << TIMEMS << "MainStream Alarm";
 
     QString MessageMerge;
     QDomDocument AckDom;
@@ -329,18 +349,18 @@ void TcpServer::slotMainAlarmImage()
     RootElement.setAttribute("DefenceID",GlobalConfig::MainDefenceID);
     AckDom.appendChild(RootElement);
 
-    //创建AlarmImage元素
-    QDomElement AlarmImageElement = AckDom.createElement("AlarmImage");
-    AlarmImageElement.setAttribute("id","0");
+    //创建DeviceAlarmImage元素
+    QDomElement DeviceAlarmImageElement = AckDom.createElement("DeviceAlarmImage");
+    DeviceAlarmImageElement.setAttribute("id","0");
 
     QByteArray data;
     QBuffer buffer(&data);
     MainWorkThread->AlarmImage.save(&buffer,"JPG");
     QString AlarmImageBase64 = data.toBase64();//base64的图片数据
 
-    QDomText AlarmImageElementText = AckDom.createTextNode(AlarmImageBase64);
-    AlarmImageElement.appendChild(AlarmImageElementText);
-    RootElement.appendChild(AlarmImageElement);
+    QDomText DeviceAlarmImageElementText = AckDom.createTextNode(AlarmImageBase64);
+    DeviceAlarmImageElement.appendChild(DeviceAlarmImageElementText);
+    RootElement.appendChild(DeviceAlarmImageElement);
 
     QTextStream Out(&MessageMerge);
     AckDom.save(Out,4);
@@ -353,7 +373,7 @@ void TcpServer::slotMainAlarmImage()
 
 void TcpServer::slotSubAlarmImage()
 {
-    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "SubStream Alarm";
+    qDebug() << TIMEMS << "SubStream Alarm";
 
     QString MessageMerge;
     QDomDocument AckDom;
@@ -368,18 +388,18 @@ void TcpServer::slotSubAlarmImage()
     RootElement.setAttribute("DefenceID",GlobalConfig::SubDefenceID);
     AckDom.appendChild(RootElement);
 
-    //创建AlarmImage元素
-    QDomElement AlarmImageElement = AckDom.createElement("AlarmImage");
-    AlarmImageElement.setAttribute("id","1");
+    //创建DeviceAlarmImage元素
+    QDomElement DeviceAlarmImageElement = AckDom.createElement("DeviceAlarmImage");
+    DeviceAlarmImageElement.setAttribute("id","1");
 
     QByteArray data;
     QBuffer buffer(&data);
     SubWorkThread->AlarmImage.save(&buffer,"JPG");
     QString AlarmImageBase64 = data.toBase64();//base64的图片数据
 
-    QDomText AlarmImageElementText = AckDom.createTextNode(AlarmImageBase64);
-    AlarmImageElement.appendChild(AlarmImageElementText);
-    RootElement.appendChild(AlarmImageElement);
+    QDomText DeviceAlarmImageElementText = AckDom.createTextNode(AlarmImageBase64);
+    DeviceAlarmImageElement.appendChild(DeviceAlarmImageElementText);
+    RootElement.appendChild(DeviceAlarmImageElement);
 
     QTextStream Out(&MessageMerge);
     AckDom.save(Out,4);
@@ -392,7 +412,7 @@ void TcpServer::slotSubAlarmImage()
 
 void TcpServer::slotOtherAlarmMsg(quint8 id)
 {
-    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "Other Alarm";
+    qDebug() << TIMEMS << "Other Alarm";
 
     QString MessageMerge;
     QDomDocument AckDom;
@@ -408,7 +428,7 @@ void TcpServer::slotOtherAlarmMsg(quint8 id)
     AckDom.appendChild(RootElement);
 
     //创建Alarm元素
-    QDomElement AlarmElement = AckDom.createElement("Alarm");
+    QDomElement AlarmElement = AckDom.createElement("DeviceAlarm");
     AlarmElement.setAttribute("id",QString::number(id));
     RootElement.appendChild(AlarmElement);
 
@@ -426,52 +446,73 @@ void TcpServer::slotSendAlarmMsg()
     if(AlarmMsgBuffer.count() > 0){
         QString XmlData = AlarmMsgBuffer.takeFirst();
 
-        AlarmHostAlarmSocket->abort();
-        AlarmHostAlarmSocket->connectToHost(GlobalConfig::ServerIP,GlobalConfig::ServerPort);
-        bool state = AlarmHostAlarmSocket->waitForConnected(100);
-        if(state){
-            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "AlarmHostAlarmConnectStateFlag:ConnectedState";
-            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "SendBytes = " << AlarmHostAlarmSocket->write(XmlData.toAscii());
-            AlarmHostAlarmSocket->waitForBytesWritten(100);
-        }else{
-            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "AlarmHostAlarmConnectStateFlag:DisConnectedState";
-            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "slotSendAlarmMsg:" <<  AlarmHostAlarmSocket->errorString();
+        QStringList listServerIP   = GlobalConfig::ServerIP.split("|");
+        QStringList listServerPort = GlobalConfig::ServerPort.split("|");
+
+        int count = listServerIP.count();
+        for (int i = 0; i < count; i++) {
+            QString serverIP = listServerIP.at(i);
+            int serverPort = listServerPort.at(i).toInt();
+
+            QTcpSocket *tcpSocket = new QTcpSocket(this);
+            connect(tcpSocket, SIGNAL(error(QAbstractSocket::SocketError)), this, SLOT(slotAlarmHostAlarmDisplayError(QAbstractSocket::SocketError)));
+            connect(tcpSocket, SIGNAL(disconnected()), this, SLOT(slotAlarmHostAlarmDisConnected()));
+
+            tcpSocket->connectToHost(serverIP, serverPort);
+            bool isConnect = tcpSocket->waitForConnected(GlobalConfig::TcpConnectTimeout);
+            if (isConnect) {
+                tcpSocket->write(XmlData.toLatin1());
+                tcpServers.append(tcpSocket);
+                qDebug() << TIMEMS << "Connect Serve succeed" << "IP = " << serverIP << "Port = " << serverPort;
+            } else {
+                tcpSocket->close();
+                tcpSocket->deleteLater();
+                qDebug() << TIMEMS << "Connect Server Error" << "IP = " << serverIP << "Port = " << serverPort;
+            }
         }
     }
 }
 
-void TcpServer::slotAlarmHostAlarmConnected()
-{
-    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "connect to alarm host alarm succeed";
-    AlarmHostAlarmConnectStateFlag = TcpServer::ConnectedState;
-}
-
 void TcpServer::slotAlarmHostAlarmDisConnected()
 {
-    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "alarm host alarm close connection";
-    AlarmHostAlarmConnectStateFlag = TcpServer::DisConnectedState;
-    AlarmHostAlarmSocket->abort();
+    QTcpSocket *tcpSocket = (QTcpSocket *)sender();
+    QString ip = tcpSocket->peerAddress().toString();
+    int port = tcpSocket->peerPort();
+    qDebug() << TIMEMS << "Server DisConnect" << "IP = " << ip << "Port = " << port;
+
+    int count = tcpServers.count();
+    for (int i = 0; i < count; i++) {
+        if (tcpServers.at(i) == tcpSocket) {
+            tcpSocket->deleteLater();
+            tcpServers.removeAt(i);
+            break;
+        }
+    }
 }
 
 void TcpServer::slotAlarmHostAlarmDisplayError(QAbstractSocket::SocketError socketError)
 {
+    QTcpSocket *tcpSocket = (QTcpSocket *)sender();
+    QString ip = tcpSocket->peerAddress().toString();
+    int port = tcpSocket->peerPort();
+
     switch(socketError){
     case QAbstractSocket::ConnectionRefusedError:
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "AlarmHostAlarm:QAbstractSocket::ConnectionRefusedError";
+        qDebug() << TIMEMS << "Server ConnectionRefusedError" << "IP = " << ip << "Port = " << port;
         break;
     case QAbstractSocket::RemoteHostClosedError:
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "AlarmHostAlarm:QAbstractSocket::RemoteHostClosedError";
+        qDebug() << TIMEMS  << "Server RemoteHostClosedError" << "IP = " << ip << "Port = " << port;
         break;
     case QAbstractSocket::HostNotFoundError:
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "AlarmHostAlarm:QAbstractSocket::HostNotFoundError";
+        qDebug() << TIMEMS  << "Server HostNotFoundError" << "IP = " << ip << "Port = " << port;
         break;
     default:
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "AlarmHostAlarm:" + AlarmHostAlarmSocket->errorString();
+        qDebug() << TIMEMS  << "Server " + tcpSocket->errorString() << "IP = " << ip << "Port = " << port;
         break;
     }
 
-    AlarmHostAlarmConnectStateFlag = TcpServer::DisConnectedState;
-    AlarmHostAlarmSocket->abort();
+    tcpSocket->close();
+    tcpSocket->disconnectFromHost();
 }
 
 void TcpServer::slotRecvSubControlMsg()
@@ -487,7 +528,7 @@ void TcpServer::slotRecvSubControlMsg()
         QByteArray FullPackage;
 
         if(SubControlBuffer.size() <= 57){
-            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "SubControlBuffer.size() <= 57";
+            qDebug() << TIMEMS << "SubControlBuffer.size() <= 57";
             SubControlBuffer.clear();
             return;
         }
@@ -506,7 +547,7 @@ void TcpServer::slotRecvSubControlMsg()
         }
 
         if(!dom.setContent(FullPackage, &errorMsg, &errorLine, &errorColumn)) {
-            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "Parse error at line " << errorLine <<","<< "column " << errorColumn << ","<< errorMsg;
+            qDebug() << TIMEMS << "Parse error at line " << errorLine <<","<< "column " << errorColumn << ","<< errorMsg;
             return;
         }
 
@@ -535,7 +576,7 @@ void TcpServer::slotRecvSubControlMsg()
 
 void TcpServer::slotSubControlConnected()
 {
-    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "connect to sub control succeed";
+    qDebug() << TIMEMS << "connect to sub control succeed";
     SubControlConnectStateFlag = TcpServer::ConnectedState;
 
     //停止重连右边的辅助控制杆定时器
@@ -547,26 +588,25 @@ void TcpServer::slotSubControlConnected()
 
 void TcpServer::slotSubControlDisConnected()
 {
-    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "sub control close connection";
+    qDebug() << TIMEMS << "sub control close connection";
     SubControlConnectStateFlag = TcpServer::DisConnectedState;
     SubControlSocket->abort();
 }
-
 
 void TcpServer::slotSubControlDisplayError(QAbstractSocket::SocketError socketError)
 {
     switch(socketError){
     case QAbstractSocket::ConnectionRefusedError:
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "SubControl:QAbstractSocket::ConnectionRefusedError";
+        qDebug() << TIMEMS << "SubControl:QAbstractSocket::ConnectionRefusedError";
         break;
     case QAbstractSocket::RemoteHostClosedError:
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "SubControl:QAbstractSocket::RemoteHostClosedError";
+        qDebug() << TIMEMS << "SubControl:QAbstractSocket::RemoteHostClosedError";
         break;
     case QAbstractSocket::HostNotFoundError:
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "SubControl:QAbstractSocket::HostNotFoundError";
+        qDebug() << TIMEMS << "SubControl:QAbstractSocket::HostNotFoundError";
         break;
     default:
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "SubControl:" + SubControlSocket->errorString();
+        qDebug() << TIMEMS << "SubControl:" + SubControlSocket->errorString();
         break;
     }
 
@@ -588,43 +628,27 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
     int errorLine, errorColumn;
     bool isBasicConfig = false;
     bool isSystemReboot = false;
-    bool isReturnDeviceStatus = false;//本设备返回设备的状态
     bool isReturnOK = false;//本设备返回OK消息给报警主机
     bool isGetBasicPic = false;//本设备返回主控制杆图片和辅助控制杆图片给报警主机
     bool isGetMainStream = false;//本设备返回主控制杆图片给报警主机
     bool isSubStream = false;//本设备将辅助控制杆基准点配置信息发送给右边的辅助控制杆
     bool isSetSubStreamPWM = false;//本设备将报警主机调节辅助控制杆灯柱亮度的PWM发送给辅助控制杆
-    bool isValidConfig = true;//最后一个点位没有主控制杆，如果配置进行配置就是进行非法操作
+    bool isGetDeviceConfig = false;//本设备返回网络配置信息给报警主机
 
     QString SubStreamBasicPoint;//辅助控制杆基准点配置信息
     quint8 PWM;
-    QByteArray FullPackage;
 
-    if(AlarmHostConfigBuffer.size() <= 37){
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "AlarmHostConfigBuffer.size() <= 37";
-        AlarmHostConfigBuffer.clear();
-        return;
-    }
+    QString FullPackage = AlarmHostConfigBuffer.takeFirst();
+    QTcpSocket *AlarmHostConfigSocket = tcpClients.takeFirst();
 
-    int index = AlarmHostConfigBuffer.indexOf("IALARM:");
-    if(index == -1){
-        return;
-    }
-
-    int MsgLength = AlarmHostConfigBuffer.mid(index + 7, 13).toUInt();
-    if(AlarmHostConfigBuffer.size() - 20 >= MsgLength) {
-        FullPackage = AlarmHostConfigBuffer.mid(20, MsgLength);
-        AlarmHostConfigBuffer = AlarmHostConfigBuffer.mid(20 + MsgLength);
-    }else{
-        return;
-    }
+    FullPackage = FullPackage.mid(20);
 
     if(!dom.setContent(FullPackage, &errorMsg, &errorLine, &errorColumn)) {
-        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "Parse error at line " << errorLine <<","<< "column " << errorColumn << ","<< errorMsg;
+        qDebug() << TIMEMS << "Parse error at line " << errorLine <<","<< "column " << errorColumn << ","<< errorMsg;
         return;
     }
 
-    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << FullPackage;
+    qDebug() << TIMEMS << FullPackage;
 
     QDomElement RootElement = dom.documentElement();//获取根元素
     if(RootElement.tagName() == "Server"){ //根元素名称
@@ -644,7 +668,7 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                 QDomNode firstChildNode = RootElement.firstChild();//第一个子节点
                 while(!firstChildNode.isNull()){
                     if(firstChildNode.nodeName() == "StartServices"){
-                        isReturnDeviceStatus = true;
+                        isReturnOK = true;
                         if(!MainStreamVideoName.isEmpty()){
                             MainWorkThread->isStopCapture = false;
                         }
@@ -655,7 +679,7 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                     }
 
                     if(firstChildNode.nodeName() == "StopServices"){
-                        isReturnDeviceStatus = true;
+                        isReturnOK = true;
                         if(!MainStreamVideoName.isEmpty()){
                             MainWorkThread->isStopCapture = true;
                         }
@@ -666,91 +690,74 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                     }
 
                     if(firstChildNode.nodeName() == "ServerIP"){
-                        if(!MainStreamVideoName.isEmpty()){
-                            isReturnOK = true;
-                            isBasicConfig = true;
-                            isValidConfig = true;
-                            QDomElement firstChildElement = firstChildNode.toElement();
-                            QString ServerIP = firstChildElement.text();
-                            CommonSetting::WriteSettings("/bin/config.ini","AppConfig/ServerIP",ServerIP);
-                            GlobalConfig::ServerIP = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/ServerIP");
-                        }else{
-                            isValidConfig = false;
-                        }
+                        isBasicConfig = true;
+                        isReturnOK = true;
+                        QDomElement firstChildElement = firstChildNode.toElement();
+                        QString ServerIP = firstChildElement.text();
+                        CommonSetting::WriteSettings(GlobalConfig::ConfigFileName,"AppConfig/ServerIP",ServerIP);
+                        GlobalConfig::ServerIP = CommonSetting::ReadSettings(GlobalConfig::ConfigFileName,"AppConfig/ServerIP");
+                    }
+
+                    if(firstChildNode.nodeName() == "ServerPort"){
+                        isBasicConfig = true;
+                        isReturnOK = true;
+                        QDomElement firstChildElement = firstChildNode.toElement();
+                        QString ServerPort = firstChildElement.text();
+                        CommonSetting::WriteSettings(GlobalConfig::ConfigFileName,"AppConfig/ServerPort",ServerPort);
+                        GlobalConfig::ServerPort = CommonSetting::ReadSettings(GlobalConfig::ConfigFileName,"AppConfig/ServerPort");
                     }
 
                     if(firstChildNode.nodeName() == "SubIP"){
-                        if(!MainStreamVideoName.isEmpty()){
-                            isReturnOK = true;
-                            isBasicConfig = true;
-                            isValidConfig = true;
-                            QDomElement firstChildElement = firstChildNode.toElement();
-                            QString SubIP = firstChildElement.text();
-                            CommonSetting::WriteSettings("/bin/config.ini","AppConfig/SubIP",SubIP);
-                            GlobalConfig::SubIP = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/SubIP");
-                        }else{
-                            isValidConfig = false;
-                        }
+                        isBasicConfig = true;
+                        isReturnOK = true;
+                        QDomElement firstChildElement = firstChildNode.toElement();
+                        QString SubIP = firstChildElement.text();
+                        CommonSetting::WriteSettings(GlobalConfig::ConfigFileName,"AppConfig/SubIP",SubIP);
+                        GlobalConfig::SubIP = CommonSetting::ReadSettings(GlobalConfig::ConfigFileName,"AppConfig/SubIP");
                     }
 
                     if(firstChildNode.nodeName() == "DefenceID"){
-                        if(!MainStreamVideoName.isEmpty()){
-                            isReturnOK = true;
-                            isBasicConfig = true;
-                            isValidConfig = true;
-                            QDomElement firstChildElement = firstChildNode.toElement();
-                            QString DefenceID = firstChildElement.text();
-                            CommonSetting::WriteSettings("/bin/config.ini","AppConfig/MainDefenceID",DefenceID);
-                            GlobalConfig::MainDefenceID = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/MainDefenceID");
-                        }else{
-                            isValidConfig = false;
-                        }
+                        isBasicConfig = true;
+                        isReturnOK = true;
+                        QDomElement firstChildElement = firstChildNode.toElement();
+                        QString DefenceID = firstChildElement.text();
+                        CommonSetting::WriteSettings(GlobalConfig::ConfigFileName,"AppConfig/MainDefenceID",DefenceID);
+                        GlobalConfig::MainDefenceID = CommonSetting::ReadSettings(GlobalConfig::ConfigFileName,"AppConfig/MainDefenceID");
                     }
 
 
                     if(firstChildNode.nodeName() == "CameraSleepTime"){
+                        isBasicConfig = true;
+                        isReturnOK = true;
                         //采集间隔（单位毫秒）
                         QDomElement firstChildElement = firstChildNode.toElement();
                         QString CameraSleepTime = firstChildElement.text();
-                        CommonSetting::WriteSettings("/bin/config.ini","AppConfig/CameraSleepTime",CameraSleepTime);
-
-                        GlobalConfig::CameraSleepTime = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/CameraSleepTime").toInt();
+                        CommonSetting::WriteSettings(GlobalConfig::ConfigFileName,"AppConfig/CameraSleepTime",CameraSleepTime);
+                        GlobalConfig::CameraSleepTime = CommonSetting::ReadSettings(GlobalConfig::ConfigFileName,"AppConfig/CameraSleepTime").toInt();
                     }
 
                     if(firstChildNode.nodeName() == "DeviceMacAddr"){
+                        isBasicConfig = true;
+                        isReturnOK = true;
                         //设备MAC地址（同一局域网内设备不能有重复的MAC地址）
                         QDomElement firstChildElement = firstChildNode.toElement();
-                        QString DeviceMacAddr = firstChildElement.text();
-                        CommonSetting::WriteSettings("/bin/config.ini","AppConfig/DeviceMacAddr",DeviceMacAddr);
-
-                        GlobalConfig::DeviceMacAddr = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/DeviceMacAddr");
-
-                        //重启网卡
-                        system("/etc/init.d/ifconfig-eth0");
-
-                        GlobalConfig::LocalHostIP = CommonSetting::GetLocalHostIP();
-                        GlobalConfig::Gateway = CommonSetting::GetGateway();
-                        GlobalConfig::MAC = CommonSetting::ReadMacAddress();
+                        QString DeviceMacAddr = firstChildElement.text().toUpper();
+                        CommonSetting::WriteSettings(GlobalConfig::ConfigFileName,"AppConfig/DeviceMacAddr",DeviceMacAddr);
+                        GlobalConfig::DeviceMacAddr = CommonSetting::ReadSettings(GlobalConfig::ConfigFileName,"AppConfig/DeviceMacAddr");
                     }
 
                     if(firstChildNode.nodeName() == "DeviceIPAddrPrefix"){
-                        //设备网段 默认192.168.8.
+                        isBasicConfig = true;
+                        isReturnOK = true;
+                        //设备网段 默认192.168.8
                         QDomElement firstChildElement = firstChildNode.toElement();
                         QString DeviceIPAddrPrefix = firstChildElement.text();
-                        CommonSetting::WriteSettings("/bin/config.ini","AppConfig/DeviceIPAddrPrefix",DeviceIPAddrPrefix);
-
-                        GlobalConfig::DeviceIPAddrPrefix = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/DeviceIPAddrPrefix");
-
-                        //重启网卡
-                        system("/etc/init.d/ifconfig-eth0");
-
-                        GlobalConfig::LocalHostIP = CommonSetting::GetLocalHostIP();
-                        GlobalConfig::Gateway = CommonSetting::GetGateway();
-                        GlobalConfig::MAC = CommonSetting::ReadMacAddress();
+                        CommonSetting::WriteSettings(GlobalConfig::ConfigFileName,"AppConfig/DeviceIPAddrPrefix",DeviceIPAddrPrefix);
+                        GlobalConfig::DeviceIPAddrPrefix = CommonSetting::ReadSettings(GlobalConfig::ConfigFileName,"AppConfig/DeviceIPAddrPrefix");
                     }
 
                     if(firstChildNode.nodeName() == "GetBasicPic"){
-                            isGetBasicPic = true;
+                        isGetBasicPic = true;
                     }
 
                     if(firstChildNode.nodeName() == "MainStream"){
@@ -758,9 +765,9 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                         QDomElement firstChildElement = firstChildNode.toElement();
                         QString MainStreamBasicPoint = firstChildElement.text();
                         MainStreamBasicPoint = MainStreamBasicPoint.split(",").join(".");
-                        CommonSetting::WriteSettings("/bin/config.ini","AppConfig/MainStreamBasicPoint",MainStreamBasicPoint);
+                        CommonSetting::WriteSettings(GlobalConfig::ConfigFileName,"AppConfig/MainStreamBasicPoint",MainStreamBasicPoint);
 
-                        GlobalConfig::MainStreamFactor = CommonSetting::ReadSettings("/bin/config.ini","AppConfig/MainStreamBasicPoint").split("#").at(0).toInt();
+                        GlobalConfig::MainStreamFactor = CommonSetting::ReadSettings(GlobalConfig::ConfigFileName,"AppConfig/MainStreamBasicPoint").split("#").at(0).toInt();
                         GlobalConfig::MainStreamSelectRect = GlobalConfig::GetMainStreamSelectRect();
                         GlobalConfig::MainStreamLightPoint = GlobalConfig::GetMainStreamLightPoint();
 
@@ -799,105 +806,16 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                         }
                     }
 
+                    if(firstChildNode.nodeName() == "GetDeviceConfig") {
+                        isGetDeviceConfig = true;
+                    }
+
                     if(firstChildNode.nodeName() == "SystemReboot"){
                         isReturnOK = true;
                         isSystemReboot = true;
                     }
 
                     firstChildNode = firstChildNode.nextSibling();//下一个节点
-                }
-
-
-                if(isReturnDeviceStatus){
-                    QString MessageMerge;
-                    QDomDocument AckDom;
-
-                    //xml声明
-                    QString XmlHeader("version=\"1.0\" encoding=\"UTF-8\"");
-                    AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
-
-                    //创建根元素
-                    QDomElement RootElement = AckDom.createElement("Device");
-                    RootElement.setAttribute("DeviceIP",GlobalConfig::LocalHostIP);
-                    if(GlobalConfig::MainDefenceID.isEmpty()){
-                        RootElement.setAttribute("DefenceID",GlobalConfig::SubDefenceID);
-                    }else{
-                        RootElement.setAttribute("DefenceID",GlobalConfig::MainDefenceID);
-                    }
-                    AckDom.appendChild(RootElement);
-
-                    //创建DeviceStatus元素
-                    QDomElement DeviceStatusElement = AckDom.createElement("DeviceStatus");
-                    QString DeviceStatus;
-                    if(!MainStreamVideoName.isEmpty()){
-                        if(MainWorkThread->isStopCapture){
-                            DeviceStatus = QString("0");
-                        }else{
-                            DeviceStatus = QString("1");
-                        }
-                    }
-
-                    if(!SubStreamVideoName.isEmpty()){
-                        if(SubWorkThread->isStopCapture){
-                            DeviceStatus = QString("0");
-                        }else{
-                            DeviceStatus = QString("1");
-                        }
-                    }
-
-                    if(MainStreamVideoName.isEmpty() && SubStreamVideoName.isEmpty()) {
-                        DeviceStatus = QString("0");
-                    }
-
-                    QDomText DeviceStatusElementText = AckDom.createTextNode(DeviceStatus);
-                    DeviceStatusElement.appendChild(DeviceStatusElementText);
-                    RootElement.appendChild(DeviceStatusElement);
-
-                    QTextStream Out(&MessageMerge);
-                    AckDom.save(Out,4);
-
-                    int length = MessageMerge.size();
-                    MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
-
-                    if(AlarmHostConfigSocket->isOpen() && AlarmHostConfigSocket->isWritable()) {
-                        AlarmHostConfigSocket->write(MessageMerge.toAscii());
-                        AlarmHostConfigSocket->waitForBytesWritten(300);
-
-                        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-                    }
-                }
-
-                if(isReturnOK){
-                    QString MessageMerge;
-                    QDomDocument AckDom;
-
-                    //xml声明
-                    QString XmlHeader("version=\"1.0\" encoding=\"UTF-8\"");
-                    AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
-
-                    //创建根元素
-                    QDomElement RootElement = AckDom.createElement("Device");
-
-                    RootElement.setAttribute("DeviceIP",GlobalConfig::LocalHostIP);
-                    RootElement.setAttribute("DefenceID",GlobalConfig::MainDefenceID);
-
-                    QDomText RootElementText = AckDom.createTextNode("OK");
-                    RootElement.appendChild(RootElementText);
-
-                    AckDom.appendChild(RootElement);
-
-                    QTextStream Out(&MessageMerge);
-                    AckDom.save(Out,4);
-
-                    int length = MessageMerge.size();
-                    MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
-
-                    if(AlarmHostConfigSocket->isOpen() && AlarmHostConfigSocket->isWritable()) {
-                        AlarmHostConfigSocket->write(MessageMerge.toAscii());
-                        AlarmHostConfigSocket->waitForBytesWritten(300);
-                        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-
-                    }
                 }
 
                 if(isBasicConfig){
@@ -939,56 +857,9 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                     int length = MessageMerge.size();
                     MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
 
-                    if(SubControlConnectStateFlag == TcpServer::ConnectedState){
-                        if(SubControlSocket->isOpen() && SubControlSocket->isWritable()) {
-                            SubControlSocket->write(MessageMerge.toAscii());
-                            SubControlSocket->waitForBytesWritten(300);
-                            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-                        }
-                    }else if(SubControlConnectStateFlag == TcpServer::DisConnectedState){
-                        SubControlSocket->connectToHost(GlobalConfig::SubIP,GlobalConfig::MainControlServerPort);
-                        bool state = SubControlSocket->waitForConnected(100);
-                        if(state){
-                            if(SubControlSocket->isOpen() && SubControlSocket->isWritable()) {
-                                SubControlSocket->write(MessageMerge.toAscii());
-                                SubControlSocket->waitForBytesWritten(300);
-                                qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-                            }
-                        }
-                    }
-                }
+                    WriteData(MessageMerge);
 
-                if(!isValidConfig){//非法配置
-                    QString MessageMerge;
-                    QDomDocument AckDom;
-
-                    //xml声明
-                    QString XmlHeader("version=\"1.0\" encoding=\"UTF-8\"");
-                    AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
-
-                    //创建根元素
-                    QDomElement RootElement = AckDom.createElement("Device");
-
-                    RootElement.setAttribute("DeviceIP",GlobalConfig::LocalHostIP);
-                    RootElement.setAttribute("DefenceID",GlobalConfig::SubDefenceID);
-
-                    QDomText RootElementText = AckDom.createTextNode("非法配置,本设备只有辅助控制杆,没有主控制杆，配置无效");
-                    RootElement.appendChild(RootElementText);
-
-                    AckDom.appendChild(RootElement);
-
-                    QTextStream Out(&MessageMerge);
-                    AckDom.save(Out,4);
-
-                    int length = MessageMerge.size();
-                    MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
-
-                    if(AlarmHostConfigSocket->isOpen() && AlarmHostConfigSocket->isWritable()) {
-                        AlarmHostConfigSocket->write(MessageMerge.toAscii());
-                        AlarmHostConfigSocket->waitForBytesWritten(300);
-                        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-
-                    }
+                    CommonSetting::Sleep(500);
                 }
 
                 if(isGetBasicPic){
@@ -1005,12 +876,15 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                         QDomElement RootElement = AckDom.createElement("Device");
 
                         RootElement.setAttribute("DeviceIP",GlobalConfig::LocalHostIP);
-                        RootElement.setAttribute("DefenceID",GlobalConfig::SubDefenceID);
-
-                        QDomText RootElementText = AckDom.createTextNode("非法配置,本设备只有辅助控制杆,没有主控制杆，不能获取基准图片");
-                        RootElement.appendChild(RootElementText);
-
+                        RootElement.setAttribute("DefenceID",GlobalConfig::MainDefenceID);
                         AckDom.appendChild(RootElement);
+
+                        //创建DeviceError
+                        QDomElement DeviceErrorElement = AckDom.createElement("DeviceError");
+                        QDomText DeviceErrorText = AckDom.createTextNode("非法配置,本设备只有辅助控制杆,没有主控制杆，不能获取基准图片");
+                        DeviceErrorElement.appendChild(DeviceErrorText);
+                        RootElement.appendChild(DeviceErrorElement);
+
 
                         QTextStream Out(&MessageMerge);
                         AckDom.save(Out,4);
@@ -1018,13 +892,8 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                         int length = MessageMerge.size();
                         MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
 
-                        if(AlarmHostConfigSocket->isOpen() && AlarmHostConfigSocket->isWritable())
-                        {
-                            AlarmHostConfigSocket->write(MessageMerge.toAscii());
-                            AlarmHostConfigSocket->waitForBytesWritten(300);
-                            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-
-                        }
+                        SendAlarmHostConfigData(MessageMerge,AlarmHostConfigSocket);
+                        qDebug() << TIMEMS << "DeviceError";
                     }else{
                         //有主控制杆和相应的辅助控制杆，能获取基准图片
                         //1.发送GetSubStream包给辅助控制杆
@@ -1037,7 +906,8 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                             AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
 
                             //创建根元素
-                            QDomElement RootElement = AckDom.createElement("MainControlDevice");
+                            QDomElement RootElement =
+                                    AckDom.createElement("MainControlDevice");
                             AckDom.appendChild(RootElement);
 
                             //创建GetSubStream元素
@@ -1051,25 +921,7 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                             int length = MessageMerge.size();
                             MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
 
-                            if(SubControlConnectStateFlag == TcpServer::ConnectedState){
-                                if(SubControlSocket->isOpen() && SubControlSocket->isWritable())
-                                {
-                                    SubControlSocket->write(MessageMerge.toAscii());
-                                    SubControlSocket->waitForBytesWritten(300);
-                                    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-                                }
-                            }else if(SubControlConnectStateFlag == TcpServer::DisConnectedState){
-                                SubControlSocket->connectToHost(GlobalConfig::SubIP,GlobalConfig::MainControlServerPort);
-                                bool state = SubControlSocket->waitForConnected(100);
-                                if(state){
-                                    if(SubControlSocket->isOpen() && SubControlSocket->isWritable())
-                                    {
-                                        SubControlSocket->write(MessageMerge.toAscii());
-                                        SubControlSocket->waitForBytesWritten(300);
-                                        qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-                                    }
-                                }
-                            }
+                            WriteData(MessageMerge);
                         }
 
                         //2.获取主控制杆图片，并且发送给报警主机
@@ -1088,7 +940,8 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                             AckDom.appendChild(RootElement);
 
                             //创建MainStream元素
-                            QDomElement MainStreamElement = AckDom.createElement("MainStream");
+                            QDomElement MainStreamElement =
+                                    AckDom.createElement("MainStream");
                             QString MainStreamBase64 = QString("");
 
                             if(!MainStreamVideoName.isEmpty()){
@@ -1119,18 +972,21 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                             MainStreamElement.appendChild(MainStreamElementText);
                             RootElement.appendChild(MainStreamElement);
 
+                            //创建SubStream元素
+                            QDomElement SubStreamElement =
+                                    AckDom.createElement("SubStream");
+                            QDomText SubStreamElementText = AckDom.createTextNode("");
+                            SubStreamElement.appendChild(SubStreamElementText);
+                            RootElement.appendChild(SubStreamElement);
+
                             QTextStream Out(&MessageMerge);
                             AckDom.save(Out,4);
 
                             int length = MessageMerge.size();
                             MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
 
-                            if(AlarmHostConfigSocket->isOpen() && AlarmHostConfigSocket->isWritable())
-                            {
-                                AlarmHostConfigSocket->write(MessageMerge.toAscii());
-                                AlarmHostConfigSocket->waitForBytesWritten(300);
-                                qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "Return MainStream Pic";
-                            }
+                            SendAlarmHostConfigData(MessageMerge,AlarmHostConfigSocket);
+                            qDebug() << TIMEMS << "Return MainStream Basic Pic";
                         }
                     }
                 }
@@ -1175,13 +1031,10 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                         int length = MessageMerge.size();
                         MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
 
-                        if(AlarmHostConfigSocket->isOpen() && AlarmHostConfigSocket->isWritable()){
-                            AlarmHostConfigSocket->write(MessageMerge.toAscii());
-                            AlarmHostConfigSocket->waitForBytesWritten(300);
-                            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << "GetMainStream";
-                        }
+                        SendAlarmHostConfigData(MessageMerge,AlarmHostConfigSocket);
+                        qDebug() << TIMEMS << "GetMainStream";
 
-                        MainWorkThread->NormalImage = QImage();
+//                        MainWorkThread->NormalImage = QImage();
                     }
                 }
 
@@ -1215,12 +1068,8 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                         MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
 
 
-                        if(AlarmHostConfigSocket->isOpen() && AlarmHostConfigSocket->isWritable()) {
-                            AlarmHostConfigSocket->write(MessageMerge.toAscii());
-                            AlarmHostConfigSocket->waitForBytesWritten(300);
-                            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-                        }
-
+                        SendAlarmHostConfigData(MessageMerge,AlarmHostConfigSocket);
+                        qDebug() << TIMEMS << MessageMerge;
                     }
 
                     //2、将辅助控制杆基准点配置信息发送给右边的辅助控制杆
@@ -1249,29 +1098,8 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                         int length = MessageMerge.size();
                         MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
 
-                        if(SubControlConnectStateFlag == TcpServer::ConnectedState){
-                            if(SubControlSocket->isOpen() && SubControlSocket->isWritable()) {
-                                SubControlSocket->write(MessageMerge.toAscii());
-                                SubControlSocket->waitForBytesWritten(300);
-                                qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-                            }
-                        }else if(SubControlConnectStateFlag == TcpServer::DisConnectedState){
-                            SubControlSocket->connectToHost(GlobalConfig::SubIP,GlobalConfig::MainControlServerPort);
-                            bool state = SubControlSocket->waitForConnected(100);
-                            if(state){
-                                if(SubControlSocket->isOpen() && SubControlSocket->isWritable())
-                                {
-                                    SubControlSocket->write(MessageMerge.toAscii());
-                                    SubControlSocket->waitForBytesWritten(300);
-                                    qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-                                }
-                            }
-                        }
+                        WriteData(MessageMerge);
                     }
-                }
-
-                if(isSystemReboot){
-                    system("reboot");
                 }
 
                 if(isSetSubStreamPWM){
@@ -1298,23 +1126,112 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
                     int length = MessageMerge.size();
                     MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
 
-                    if(SubControlConnectStateFlag == TcpServer::ConnectedState){
-                        if(SubControlSocket->isOpen() && SubControlSocket->isWritable()) {
-                            SubControlSocket->write(MessageMerge.toAscii());
-                            SubControlSocket->waitForBytesWritten(300);
-                            qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-                        }
-                    }else if(SubControlConnectStateFlag == TcpServer::DisConnectedState){
-                        SubControlSocket->connectToHost(GlobalConfig::SubIP,GlobalConfig::MainControlServerPort);
-                        bool state = SubControlSocket->waitForConnected(100);
-                        if(state){
-                            if(SubControlSocket->isOpen() && SubControlSocket->isWritable()) {
-                                SubControlSocket->write(MessageMerge.toAscii());
-                                SubControlSocket->waitForBytesWritten(300);
-                                qDebug() << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm:ss") << MessageMerge;
-                            }
-                        }
-                    }
+                    WriteData(MessageMerge);
+                }
+
+                if(isGetDeviceConfig){
+                    QString MessageMerge;
+                    QDomDocument AckDom;
+
+                    //xml声明
+                    QString XmlHeader("version=\"1.0\" encoding=\"UTF-8\"");
+                    AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
+
+                    //创建根元素
+                    QDomElement RootElement = AckDom.createElement("Device");
+
+                    RootElement.setAttribute("DeviceIP",GlobalConfig::LocalHostIP);
+                    RootElement.setAttribute("DefenceID",GlobalConfig::MainDefenceID);
+                    AckDom.appendChild(RootElement);
+
+                    //创建ServerIP元素
+                    QDomElement ServerIP = AckDom.createElement("ServerIP");
+                    QDomText ServerIPText = AckDom.createTextNode(GlobalConfig::ServerIP);
+                    ServerIP.appendChild(ServerIPText);
+                    RootElement.appendChild(ServerIP);
+
+                    //创建ServerPort元素
+                    QDomElement ServerPort = AckDom.createElement("ServerPort");
+                    QDomText ServerPortText =
+                            AckDom.createTextNode(GlobalConfig::ServerPort);
+                    ServerPort.appendChild(ServerPortText);
+                    RootElement.appendChild(ServerPort);
+
+                    //创建SubIP元素
+                    QDomElement SubIP = AckDom.createElement("SubIP");
+                    QDomText SubIPText = AckDom.createTextNode(GlobalConfig::SubIP);
+                    SubIP.appendChild(SubIPText);
+                    RootElement.appendChild(SubIP);
+
+                    //创建DefenceID元素
+                    QDomElement DefenceID = AckDom.createElement("DefenceID");
+                    QDomText DefenceIDText = AckDom.createTextNode(GlobalConfig::MainDefenceID);
+                    DefenceID.appendChild(DefenceIDText);
+                    RootElement.appendChild(DefenceID);
+
+                    //创建CameraSleepTime元素
+                    QDomElement CameraSleepTime = AckDom.createElement("CameraSleepTime");
+                    QDomText CameraSleepTimeText =
+                           AckDom.createTextNode(QString::number(GlobalConfig::CameraSleepTime));
+                    CameraSleepTime.appendChild(CameraSleepTimeText);
+                    RootElement.appendChild(CameraSleepTime);
+
+                    //创建DeviceMacAddr元素
+                    QDomElement DeviceMacAddr = AckDom.createElement("DeviceMacAddr");
+                    QDomText DeviceMacAddrText =
+                            AckDom.createTextNode(GlobalConfig::DeviceMacAddr);
+                    DeviceMacAddr.appendChild(DeviceMacAddrText);
+                    RootElement.appendChild(DeviceMacAddr);
+
+                    //创建DeviceIPAddrPrefix元素
+                    QDomElement DeviceIPAddrPrefix = AckDom.createElement("DeviceIPAddrPrefix");
+                    QDomText DeviceIPAddrPrefixText =
+                            AckDom.createTextNode(GlobalConfig::DeviceIPAddrPrefix);
+                    DeviceIPAddrPrefix.appendChild(DeviceIPAddrPrefixText);
+                    RootElement.appendChild(DeviceIPAddrPrefix);
+
+                    QTextStream Out(&MessageMerge);
+                    AckDom.save(Out,4);
+
+                    int length = MessageMerge.size();
+                    MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
+
+                    SendAlarmHostConfigData(MessageMerge,AlarmHostConfigSocket);
+                    qDebug() << TIMEMS << "GetDeviceConfig";
+                }
+
+                if(isReturnOK){
+                    QString MessageMerge;
+                    QDomDocument AckDom;
+
+                    //xml声明
+                    QString XmlHeader("version=\"1.0\" encoding=\"UTF-8\"");
+                    AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
+
+                    //创建根元素
+                    QDomElement RootElement = AckDom.createElement("Device");
+
+                    RootElement.setAttribute("DeviceIP",GlobalConfig::LocalHostIP);
+                    RootElement.setAttribute("DefenceID",GlobalConfig::MainDefenceID);
+
+                    QDomText RootElementText = AckDom.createTextNode("OK");
+                    RootElement.appendChild(RootElementText);
+
+                    AckDom.appendChild(RootElement);
+
+                    QTextStream Out(&MessageMerge);
+                    AckDom.save(Out,4);
+
+                    int length = MessageMerge.size();
+                    MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
+
+                    SendAlarmHostConfigData(MessageMerge,AlarmHostConfigSocket);
+                    qDebug() << TIMEMS << MessageMerge;
+                    CommonSetting::Sleep(500);
+                }
+
+                if(isSystemReboot){
+                    system("reboot");
                 }
             }
         }
@@ -1323,6 +1240,8 @@ void TcpServer::slotProcessAlarmHostConfigMsg()
 
 void TcpServer::slotMainUSBCameraOffline()
 {
+    SendMainCameraStateInfo("主杆摄像头掉线");
+
     GetCameraInfo::Instance()->GetMainCameraDevice();
 
     MainWorkThread->operatecamera->VideoName = GetCameraInfo::MainCamera;
@@ -1331,14 +1250,94 @@ void TcpServer::slotMainUSBCameraOffline()
     MainWorkThread->isStopCapture = false;
 }
 
+void TcpServer::slotMainUSBCameraOnline()
+{
+    SendMainCameraStateInfo("主杆摄像头恢复");
+}
+
 void TcpServer::slotSubUSBCameraOffline()
 {
+    SendSubCameraStateInfo("辅杆摄像头掉线");
+
     GetCameraInfo::Instance()->GetMainCameraDevice();
 
     SubWorkThread->operatecamera->VideoName = GetCameraInfo::SubCamera;
     SubWorkThread->VideoName = GetCameraInfo::SubCamera;
     SubWorkThread->isReInitialize = true;
     SubWorkThread->isStopCapture = false;
+}
+
+void TcpServer::slotSubUSBCameraOnline()
+{
+    SendSubCameraStateInfo("辅杆摄像头恢复");
+}
+
+void TcpServer::SendMainCameraStateInfo(QString info)
+{
+    qDebug() << TIMEMS << info;
+
+    QString MessageMerge;
+    QDomDocument AckDom;
+
+    //xml声明
+    QString XmlHeader("version=\"1.0\" encoding=\"UTF-8\"");
+    AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
+
+    //创建根元素
+    QDomElement RootElement = AckDom.createElement("Device");
+
+    RootElement.setAttribute("DeviceIP",GlobalConfig::LocalHostIP);
+    RootElement.setAttribute("DefenceID",GlobalConfig::MainDefenceID);
+    AckDom.appendChild(RootElement);
+
+    //创建DeviceError
+    QDomElement DeviceErrorElement = AckDom.createElement("DeviceError");
+    QDomText DeviceErrorText = AckDom.createTextNode(info);
+    DeviceErrorElement.appendChild(DeviceErrorText);
+    RootElement.appendChild(DeviceErrorElement);
+
+
+    QTextStream Out(&MessageMerge);
+    AckDom.save(Out,4);
+
+    int length = MessageMerge.size();
+    MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
+
+    AlarmMsgBuffer.append(MessageMerge);
+}
+
+void TcpServer::SendSubCameraStateInfo(QString info)
+{
+    qDebug() << TIMEMS << info;
+
+    QString MessageMerge;
+    QDomDocument AckDom;
+
+    //xml声明
+    QString XmlHeader("version=\"1.0\" encoding=\"UTF-8\"");
+    AckDom.appendChild(AckDom.createProcessingInstruction("xml", XmlHeader));
+
+    //创建根元素
+    QDomElement RootElement = AckDom.createElement("Device");
+
+    RootElement.setAttribute("DeviceIP",GlobalConfig::MainIP);
+    RootElement.setAttribute("DefenceID",GlobalConfig::SubDefenceID);
+    AckDom.appendChild(RootElement);
+
+    //创建DeviceError
+    QDomElement DeviceErrorElement = AckDom.createElement("DeviceError");
+    QDomText DeviceErrorText = AckDom.createTextNode(info);
+    DeviceErrorElement.appendChild(DeviceErrorText);
+    RootElement.appendChild(DeviceErrorElement);
+
+
+    QTextStream Out(&MessageMerge);
+    AckDom.save(Out,4);
+
+    int length = MessageMerge.size();
+    MessageMerge = QString("IALARM:") + QString("%1").arg(length,13,10,QLatin1Char('0')) + MessageMerge;
+
+    AlarmMsgBuffer.append(MessageMerge);
 }
 
 void TcpServer::slotSetSystemTime()
@@ -1356,13 +1355,93 @@ void TcpServer::enableKeepAlive(int fd, int max_idle, int keep_count, int keep_i
     setsockopt(fd, SOL_TCP, TCP_KEEPINTVL, &keep_interval, sizeof(keep_interval));
 }
 
+void TcpServer::SendAlarmHostConfigData(QString Msg,QTcpSocket *AlarmHostConfigSocket)
+{
+    AlarmHostConfigSocket->write(Msg.toAscii());
+    AlarmHostConfigSocket->waitForBytesWritten(100);
+}
+
+void TcpServer::WriteData(QString Msg)
+{
+    if(SubControlConnectStateFlag == TcpServer::ConnectedState){
+        SubControlSocket->write(Msg.toAscii());
+        SubControlSocket->waitForBytesWritten(100);
+        qDebug() << TIMEMS << Msg;
+    }else if(SubControlConnectStateFlag == TcpServer::DisConnectedState){
+        SubControlSocket->connectToHost(GlobalConfig::SubIP,GlobalConfig::MainControlServerPort);
+        bool state = SubControlSocket->waitForConnected(100);
+        if(state){
+            SubControlSocket->write(Msg.toAscii());
+            SubControlSocket->waitForBytesWritten(100);
+            qDebug() << TIMEMS << Msg;
+        }
+    }
+}
+
 void TcpServer::slotReConnectSubControl()
 {
     SubControlSocket->abort();
+    SubControlSocket->disconnectFromHost();
     SubControlSocket->connectToHost(GlobalConfig::SubIP,GlobalConfig::MainControlServerPort);
 }
 
 void TcpServer::slotCheckWorkThreadState()
 {
+    if (!MainStreamVideoName.isEmpty()) {
+        if (!MainWorkThread->isRunning()){
+            MainWorkThread->Clear();//释放资源
+            delete MainWorkThread;
 
+            isMainThreadExceptionQuit = true;
+            SendMainCameraStateInfo("主线程异常退出");
+
+            GetCameraInfo::Instance()->GetMainCameraDevice();//重新获取辅助控制杆摄像头设备文件
+
+            MainWorkThread =
+                    new WorkThread(GetCameraInfo::MainCamera,640,480,16,V4L2_PIX_FMT_YUYV,this);
+            MainWorkThread->factor = GlobalConfig::MainStreamFactor;
+            MainWorkThread->SelectRect = GlobalConfig::MainStreamSelectRect;
+            MainWorkThread->LightPoint = GlobalConfig::MainStreamLightPoint;
+            connect(MainWorkThread,SIGNAL(signalAlarmImage()),this, SLOT(slotMainAlarmImage()),Qt::BlockingQueuedConnection);
+            connect(MainWorkThread,SIGNAL(signalUSBCameraOffline()),this,SLOT(slotMainUSBCameraOffline()),Qt::BlockingQueuedConnection);
+            connect(MainWorkThread,SIGNAL(signalUSBCameraOnline()),this,SLOT(slotMainUSBCameraOnline()));
+            MainWorkThread->start();
+
+            CommonSetting::WriteCommonFile("/bin/SmartIR_Log.txt",TIMEMS + QString("MainWorkThread Restart"));
+        }else{
+            if(isMainThreadExceptionQuit){
+                SendMainCameraStateInfo("主线程恢复正常");
+                isMainThreadExceptionQuit = false;
+            }
+        }
+    }
+
+    if (!SubStreamVideoName.isEmpty()) {
+        if (!SubWorkThread->isRunning()){
+            SubWorkThread->Clear();//释放资源
+            delete SubWorkThread;
+
+            isSubThreadExceptionQuit = true;
+            SendSubCameraStateInfo("辅线程异常退出");
+
+            GetCameraInfo::Instance()->GetSubCameraDevice();//重新获取辅助控制杆摄像头设备文件
+
+            SubWorkThread =
+                    new WorkThread(GetCameraInfo::SubCamera,640,480,16,V4L2_PIX_FMT_YUYV,this);
+            SubWorkThread->factor = GlobalConfig::SubStreamFactor;
+            SubWorkThread->SelectRect = GlobalConfig::SubStreamSelectRect;
+            SubWorkThread->LightPoint = GlobalConfig::SubStreamLightPoint;
+            connect(SubWorkThread,SIGNAL(signalAlarmImage()),this, SLOT(slotSubAlarmImage()),Qt::BlockingQueuedConnection);
+            connect(SubWorkThread,SIGNAL(signalUSBCameraOffline()),this,SLOT(slotSubUSBCameraOffline()),Qt::BlockingQueuedConnection);
+            connect(SubWorkThread,SIGNAL(signalUSBCameraOnline()),this,SLOT(slotSubUSBCameraOnline()));
+            SubWorkThread->start();
+
+            CommonSetting::WriteCommonFile("/bin/SmartIR_Log.txt",TIMEMS + QString("SubWorkThread Restart"));
+        }else{
+            if(isSubThreadExceptionQuit){
+                SendSubCameraStateInfo("辅线程恢复正常");
+                isSubThreadExceptionQuit = false;
+            }
+        }
+    }
 }
